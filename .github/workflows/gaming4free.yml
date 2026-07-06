@@ -1,4 +1,4 @@
-name: gaming4free renew (WARP + Python)
+name: gaming4free 自动续期 (WARP + Python)
 
 on:
   push:
@@ -22,12 +22,13 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
       # =========================
       # 🟡 1. 安装官方 WARP 客户端（纯 SOCKS5 模式）
       # =========================
-      - name: Setup Official WARP Proxy
+      - name: 安装 WARP 代理
         run: |
           set +e
           # 方案 A：从 Cloudflare 官方 APT 源安装
@@ -110,7 +111,7 @@ jobs:
       # =========================
       # 🟡 2. 安装系统依赖（Xvfb + 音频解码）
       # =========================
-      - name: Install system deps
+      - name: 安装系统依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb ffmpeg libglib2.0-0 libnss3 libnspr4 \
@@ -122,13 +123,13 @@ jobs:
       # =========================
       # 🟡 3. Python 环境
       # =========================
-      - name: Setup Python
+      - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Python packages
+      - name: 安装 Python 依赖包
         working-directory: gaming4free-renew
         run: |
           python -m pip install --upgrade pip
@@ -138,7 +139,7 @@ jobs:
       # =========================
       # 🟡 4. 运行续期脚本
       # =========================
-      - name: Run renew script
+      - name: 运行续期脚本
         env:
           MC_USERNAME:  ${{ secrets.MC_USERNAME }}
           MC_PASSWORD:  ${{ secrets.MC_PASSWORD }}
@@ -155,7 +156,7 @@ jobs:
       # =========================
       # 🟡 5. 上传截图 + 日志（失败也上传）
       # =========================
-      - name: Upload screenshots
+      - name: 上传截图
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -164,7 +165,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload log
+      - name: 上传日志
         uses: actions/upload-artifact@v4
         if: always()
         with:
