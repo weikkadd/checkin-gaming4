@@ -436,24 +436,53 @@ def handle_turnstile(sb) -> bool:
 
 
 def inject_cookies(sb):
-    """如果提供了 cookie 字符串，注入到当前域名，然后刷新页面"""
+    """如果提供了 cookie 字符串，注入到当前域名，然后刷新页面
+
+    seleniumbase UC mode 下 sb.set_cookie() 不可用（'BaseCase' object has no attribute 'set_cookie'），
+    需要改用 sb.driver.add_cookie() 形式，且必须先在目标域下。
+    """
     if not COOKIE_STR:
         log.info("未配置 GF_COOKIE，跳过 cookie 注入（可能无法登录）")
         return False
-    log.info(f"注入自定义 cookie（{COOKIE_STR.count(';')+1} 项）...")
+
+    log.info(f"准备注入 cookie（{COOKIE_STR.count(';')+1} 项）...")
+
+    # 先确保当前在 gaming4free 域下（add_cookie 必须在目标域调用）
+    from urllib.parse import urlparse
+    try:
+        current_url = sb.get_current_url()
+        target_host = urlparse(SITE_URL).hostname
+        current_host = urlparse(current_url).hostname
+        if current_host != target_host:
+            log.info(f"当前域 {current_host} 与目标域 {target_host} 不一致，先访问目标域...")
+            sb.open(SITE_URL)
+            sb.sleep(2)
+    except Exception as e:
+        log.warning(f"检查当前 URL 失败: {e}")
+
     injected = 0
+    failed = 0
     for item in COOKIE_STR.split(";"):
         item = item.strip()
-        if "=" in item:
-            k, v = item.split("=", 1)
-            k = k.strip()
-            v = v.strip()
-            try:
-                sb.set_cookie(k, v)
-                injected += 1
-            except Exception as e:
+        if "=" not in item:
+            continue
+        k, v = item.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        try:
+            # 用 driver.add_cookie 注入（dict 格式）- UC mode 兼容
+            sb.driver.add_cookie({"name": k, "value": v})
+            injected += 1
+        except Exception as e:
+            failed += 1
+            # 只打印前 3 个失败的，避免日志爆炸
+            if failed <= 3:
                 log.warning(f"  cookie [{k}] 注入失败: {e}")
-    log.info(f"✅ 成功注入 {injected} 个 cookie")
+
+    log.info(f"✅ 成功注入 {injected} 个 cookie，失败 {failed} 个")
+
     # 注入后刷新页面让 cookie 生效
     log.info("🔄 刷新页面让 cookie 生效...")
     sb.refresh()
