@@ -134,10 +134,10 @@ def get_remaining_seconds(sb) -> int:
     """
     try:
         # 优先用 JS 直接抓含 'remaining' 关键词的元素文本
-        # 注意：seleniumbase execute_script 不允许顶层 return，必须用 IIFE 包裹
+        # 注意：seleniumbase UC mode 用 CDP，不允许顶层 return，必须用纯表达式
         try:
             txt = sb.execute_script("""
-            return (function(){
+            (function(){
                 const all = document.querySelectorAll('*');
                 for (const el of all) {
                     const t = (el.textContent || '').trim();
@@ -146,7 +146,7 @@ def get_remaining_seconds(sb) -> int:
                     }
                 }
                 return '';
-            })();
+            })()
             """)
             if txt:
                 sec = parse_remaining_seconds(txt)
@@ -239,10 +239,10 @@ def click_renew_button(sb) -> bool:
             continue
 
     # 终极兜底：用 JS 直接找包含 "90 min" 的可点击元素并点击
-    # 注意：execute_script 不允许顶层 return，必须用 IIFE 包裹
+    # 注意：UC mode 用 CDP，不允许顶层 return，必须用纯表达式
     try:
         clicked = sb.execute_script("""
-        return (function(){
+        (function(){
             const all = document.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"]');
             for (const el of all) {
                 const t = (el.textContent || el.value || '').trim();
@@ -253,7 +253,7 @@ def click_renew_button(sb) -> bool:
                 }
             }
             return '';
-        })();
+        })()
         """)
         if clicked:
             log.info(f"✅ JS 兜底点击续期按钮 [{clicked}]")
@@ -282,11 +282,11 @@ def handle_turnstile(sb) -> bool:
             # 检测 Turnstile 是否已通过：响应 input 有值
             try:
                 val = sb.execute_script(
-                    """return (function(){
+                    """(function(){
                         let el = document.querySelector('[name="cf-turnstile-response"]');
                         if (!el) el = document.querySelector('input[name*="turnstile"]');
                         return el ? el.value : '';
-                    })();"""
+                    })()"""
                 )
                 if val and len(val) > 20:
                     log.info(f"✅ Turnstile 已通过 ({i}s)")
@@ -427,20 +427,38 @@ def run():
         # Step 1: 打开站点
         try:
             sb.open(SITE_URL)
-            sb.sleep(2)
+            sb.sleep(3)
         except Exception as e:
             log.error(f"打开站点失败: {e}")
             screenshot(sb, "open_fail")
             tg(f"❌ gaming4free 续期失败：站点打不开\n{e}")
             return
 
-        # Step 2: 处理 CF 5 秒盾（如有）
-        log.info("等待 CF 5 秒盾（如有）...")
-        for _ in range(15):
-            if "just a moment" in sb.get_text("body").lower():
+        # Step 2: 处理 CF 5 秒盾（如有）+ 等 JS 渲染
+        # UC mode + WARP 通常会自动过 CF，但要给足时间
+        log.info("等待 CF 盾 + 页面 JS 渲染（最长 60s）...")
+        cf_keywords = ["just a moment", "checking your browser", "attention required",
+                       "verifying you are human", "ddos protection", "cf-browser-verification"]
+        for i in range(60):
+            try:
+                body_lower = sb.get_text("body").lower() if sb.is_element_present("body") else ""
+            except Exception:
+                body_lower = ""
+            # 如果还看到 CF 验证关键词，继续等
+            if any(kw in body_lower for kw in cf_keywords):
+                if i % 5 == 0:
+                    log.info(f"⏳ CF 盾未过 ({i}s)，继续等...")
                 time.sleep(1)
-            else:
+                continue
+            # 如果页面有了 gaming4free 的关键标志（说明已进入），就停
+            if any(kw in body_lower for kw in ["gaming4free", "console", "remaining",
+                                                  "active session", "+ 90 min", "90 min"]):
+                log.info(f"✅ 页面已加载完成 ({i}s)")
                 break
+            time.sleep(1)
+
+        # 再额外等 3 秒让 JS 完全渲染
+        sb.sleep(3)
 
         # Step 3: 注入 cookie / 登录
         inject_cookies(sb)
