@@ -126,8 +126,34 @@ def screenshot(sb, name: str):
 # 续期核心
 # ---------------------------------------------------------------------------
 def get_remaining_seconds(sb) -> int:
-    """从页面提取剩余时间，返回秒数（-1 表示无法识别）"""
+    """从页面提取剩余时间，返回秒数（-1 表示无法识别）
+
+    gaming4free 实际页面布局：
+    - 文本格式：'06:13:39 remaining' / 'expires 01:48' / 'cap 48h'
+    - 优先匹配包含 'remaining' 的那行（这才是真正的剩余时间）
+    """
     try:
+        # 优先用 JS 直接抓含 'remaining' 关键词的元素文本
+        try:
+            txt = sb.execute_script("""
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                const t = (el.textContent || '').trim();
+                // 只匹配直接子节点是文本的元素，避免匹配到父容器
+                if (el.children.length <= 2 && /remaining/i.test(t) && /\\d{1,2}:\\d{2}/.test(t)) {
+                    return t;
+                }
+            }
+            return '';
+            """)
+            if txt:
+                sec = parse_remaining_seconds(txt)
+                if sec > 0:
+                    log.info(f"剩余时间 [JS remaining] = {txt} → {sec}s ({sec//3600}h {(sec%3600)//60}m)")
+                    return sec
+        except Exception:
+            pass
+
         # 常见选择器，按优先级尝试
         selectors = [
             "#timeleft", ".timeleft", ".time-left",
@@ -147,12 +173,20 @@ def get_remaining_seconds(sb) -> int:
 
         # 兜底：整页文本提取
         body_text = sb.get_text("body")
-        # 找类似 '47h 30m' / '47:30:00' 的片段
+        # 优先找包含 'remaining' 的行
         for line in body_text.split("\n"):
-            sec = parse_remaining_seconds(line)
-            if 60 < sec < MAX_HOURS * 3600 + 3600:
-                log.info(f"剩余时间 [body line] = {line.strip()} → {sec}s")
-                return sec
+            if "remaining" in line.lower():
+                sec = parse_remaining_seconds(line)
+                if 60 < sec < MAX_HOURS * 3600 + 3600:
+                    log.info(f"剩余时间 [remaining line] = {line.strip()} → {sec}s")
+                    return sec
+        # 再找 'expires' 的行
+        for line in body_text.split("\n"):
+            if "expires" in line.lower():
+                sec = parse_remaining_seconds(line)
+                if 60 < sec < MAX_HOURS * 3600 + 3600:
+                    log.info(f"剩余时间 [expires line] = {line.strip()} → {sec}s")
+                    return sec
         return -1
     except Exception as e:
         log.warning(f"提取剩余时间失败: {e}")
@@ -162,17 +196,36 @@ def get_remaining_seconds(sb) -> int:
 def click_renew_button(sb) -> bool:
     """找到并点击续期按钮，返回是否点到了"""
     candidates = [
-        # 文字匹配优先
+        # gaming4free 实际按钮文字：+ 90 min
+        'button:contains("+ 90 min")',
+        'button:contains("90 min")',
+        'button:contains("+90")',
+        # 兼容其它文字
         'button:contains("Renew")',
         'button:contains("Extend")',
         'button:contains("续期")',
         'button:contains("增加")',
+        'a:contains("+ 90 min")',
         'a:contains("Renew")',
         # 选择器兜底
         "#renew", ".renew", ".btn-renew",
         'button[class*="renew"]', 'a[class*="renew"]',
         'button[class*="extend"]', 'a[class*="extend"]',
     ]
+
+    # 备用方案：通过 JS 找包含 "90 min" 或 "+90" 文字的所有可点击元素
+    js_find_button = """
+    return (function(){
+        const all = document.querySelectorAll('button, a, [role="button"], .btn');
+        for (const el of all) {
+            const t = (el.textContent || '').trim();
+            if (/\\+?\\s*90\\s*min/i.test(t) || /renew|extend|续期/i.test(t)) {
+                return true;
+            }
+        }
+        return false;
+    })();
+    """
     for sel in candidates:
         try:
             if sb.is_element_visible(sel):
@@ -192,6 +245,27 @@ def click_renew_button(sb) -> bool:
                 return True
         except Exception:
             continue
+
+    # 终极兜底：用 JS 直接找包含 "90 min" 的可点击元素并点击
+    try:
+        clicked = sb.execute_script("""
+        const all = document.querySelectorAll('button, a, [role="button"], .btn');
+        for (const el of all) {
+            const t = (el.textContent || '').trim();
+            if (/\\+?\\s*90\\s*min/i.test(t)) {
+                el.scrollIntoView({block:'center'});
+                el.click();
+                return t;
+            }
+        }
+        return '';
+        """)
+        if clicked:
+            log.info(f"✅ JS 兜底点击续期按钮 [{clicked}]")
+            return True
+    except Exception as e:
+        log.warning(f"JS 兜底点击失败: {e}")
+
     log.warning("❌ 未找到续期按钮")
     return False
 
