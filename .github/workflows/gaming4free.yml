@@ -80,6 +80,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Python packages
+        working-directory: gaming4free-renew
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -97,6 +98,7 @@ jobs:
           GF_COOKIE:    ${{ secrets.GF_COOKIE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+        working-directory: gaming4free-renew
         run: |
           mkdir -p screenshots
           xvfb-run -a --server-args="-screen 0 1280x800x24" python renew.py
@@ -109,7 +111,7 @@ jobs:
         if: always()
         with:
           name: screenshots-${{ github.run_id }}
-          path: screenshots/**
+          path: gaming4free-renew/screenshots/**
           if-no-files-found: warn
           retention-days: 7
 
@@ -118,6 +120,6 @@ jobs:
         if: always()
         with:
           name: renew-log-${{ github.run_id }}
-          path: renew.log
+          path: gaming4free-renew/renew.log
           if-no-files-found: warn
           retention-days: 7
