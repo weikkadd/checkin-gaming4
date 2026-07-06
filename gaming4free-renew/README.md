@@ -110,3 +110,73 @@ candidates = [
 - **只用 gaming4free** → 用这个 GHA 方案，免费
 - **还要 host2play / katabump** → VPS 后端跑那俩（link 模式无盾），GHA 跑 gaming4free
 - **两套并存也行** → VPS 面板里把 gaming4free 任务禁用，让 GHA 接管
+
+---
+
+## 🔌 跟 VPS 后端共存（重要）
+
+如果你已经在 VPS 上跑了 checkin-new-panel 后端，**强烈建议把 gaming4free 任务在 VPS 面板里禁用**，让 GHA 接管 gaming4free。否则两套同时跑会冲突：
+
+- VPS 那边因为 IP 在 CF 黑名单，每次都会失败（30 次重试就锁 1 小时）
+- GHA 这边用 WARP IP 能稳定通过
+- 两套并发会让 gaming4free 看到异常流量，可能临时封号
+
+### VPS 后端禁用 gaming4free 任务的操作
+
+#### 方法 A：通过面板 UI（推荐）
+
+1. 打开 `https://你的面板域名/`
+2. 找到 `gaming4free` 那条任务
+3. 点击编辑（✏️ 图标）
+4. 把 **`enabled`** 字段改成 `false`（或者直接删除该任务）
+5. 保存
+
+#### 方法 B：通过 API（命令行）
+
+```bash
+# 1. 查所有任务，找到 gaming4free 的 id
+curl -s https://你的后端域名/trpc/task.getAll | python3 -m json.tool
+
+# 2. 假设 gaming4free 任务的 id=1，禁用它
+curl -X POST https://你的后端域名/trpc/task.update \
+  -H "Content-Type: application/json" \
+  -d '{"id":1,"data":{"enabled":false}}'
+```
+
+#### 方法 C：直接改数据库（终极方案）
+
+```bash
+mysql -h <DB_HOST> -u <DB_USER> -p <DB_NAME> -e \
+  "UPDATE tasks SET enabled=0 WHERE name LIKE '%gaming4free%';"
+```
+
+### 验证禁用成功
+
+VPS 面板里 gaming4free 那条任务的"上次运行"时间应该不再更新。GHA 这边的运行记录可以在 GitHub 仓库 → `Actions` → `gaming4free renew` 看到。
+
+### 后续如果 GHA 出问题想回滚
+
+1. 把 GHA workflow 的 cron 注释掉（或删 `.github/workflows/gaming4free.yml`）
+2. VPS 面板里把 gaming4free 任务 `enabled` 改回 `true`
+3. 重启 VPS 后端 `pm2 restart checkin-api`
+
+---
+
+## 📁 仓库内文件位置
+
+如果你正在阅读本仓库的源码：
+
+```
+checkin-new-panel/
+├── .github/workflows/
+│   └── gaming4free.yml         # ← GHA 工作流（必须放在仓库根的 .github/workflows/）
+├── gaming4free-renew/
+│   ├── renew.py                # ← 续期脚本
+│   ├── requirements.txt        # ← Python 依赖
+│   └── README.md               # ← 本文档
+├── server/                     # ← VPS 后端代码（host2play / katabump 用）
+├── client/                     # ← Cloudflare Pages 前端代码
+└── README.md                   # ← 项目总说明
+```
+
+> 注意：workflow yaml **必须放在仓库根目录的 `.github/workflows/`**，放在 `gaming4free-renew/.github/workflows/` 是不会触发的。本仓库已正确放置。
