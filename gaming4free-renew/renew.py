@@ -518,7 +518,7 @@ def handle_ad_popup(sb) -> bool:
     3. 等广告自然消失（最长 60s）
     4. 不要点 × 或 Skip 按钮
     """
-    log.info("📺 检测广告弹窗（最长等 60s，等广告自然播完）...")
+    log.info("📺 检测广告弹窗（最长等 90s，检测 video ended/disappeared/cooldown）...")
 
     # 先等 3 秒让广告弹窗加载
     time.sleep(3)
@@ -528,9 +528,9 @@ def handle_ad_popup(sb) -> bool:
     last_video_time_stuck_count = 0
     no_ad_count = 0
 
-    for i in range(60):
+    for i in range(90):
         try:
-            # 检测广告状态
+            # 检测广告状态 + cooldown 状态
             ad_status = sb.driver.execute_script(
                 # 检测广告文字（如 "AD 0:26"）
                 "var adText = '';"
@@ -560,21 +560,35 @@ def handle_ad_popup(sb) -> bool:
                 "  var vh = videos[v].getBoundingClientRect().height;"
                 "  if (vw > 100 && vh > 100) videoInfo.push('paused=' + videos[v].paused + ' time=' + Math.round(videos[v].currentTime) + ' ended=' + videos[v].ended);"
                 "}"
-                "return JSON.stringify({adText: adText, ad: adIframes, video: videoInfo});"
+                # 检测 cooldown 状态（如果按钮变成 cooldown，说明续期成功了，广告可以结束）
+                "var cdText = '';"
+                "var btn = document.querySelector('button.rt-btn-free, .rt-btn-free');"
+                "if (btn) {"
+                "  var bt = (btn.textContent || '').trim().toLowerCase();"
+                "  if (/cd$/i.test(bt) || /wait/i.test(bt)) cdText = bt;"
+                "}"
+                "return JSON.stringify({adText: adText, ad: adIframes, video: videoInfo, cd: cdText});"
             )
 
             has_ad = False
             ad_text = ""
+            cd_text = ""
             try:
                 import json
                 data = json.loads(ad_status) if ad_status else {}
                 ad_text = data.get("adText", "")
                 ad_iframes = data.get("ad", [])
                 videos = data.get("video", [])
+                cd_text = data.get("cd", "")
                 if ad_text or ad_iframes or videos:
                     has_ad = True
             except Exception:
                 pass
+
+            # 优先检测：cooldown 出现 = 续期成功，广告可以结束
+            if cd_text:
+                log.info(f"✅ 检测到 cooldown [{cd_text}]，广告处理完成 ({i}s)")
+                return True
 
             if has_ad:
                 ad_detected = True
@@ -596,6 +610,15 @@ def handle_ad_popup(sb) -> bool:
                     time.sleep(2)
                     return True
 
+                # 检测视频消失（广告容器没了）
+                if not videos and not ad_iframes and not ad_text:
+                    no_ad_count += 1
+                    if no_ad_count >= 3:
+                        log.info(f"✅ 广告已消失 ({i}s)，认为播完了")
+                        return True
+                else:
+                    no_ad_count = 0
+
                 # 检测视频卡住
                 if videos:
                     import re
@@ -605,8 +628,8 @@ def handle_ad_popup(sb) -> bool:
                             cur_time = int(m.group(1))
                             if cur_time == last_video_time:
                                 last_video_time_stuck_count += 1
-                                if last_video_time_stuck_count >= 15:
-                                    log.info(f"⚠️ 视频卡住 15s，认为广告结束")
+                                if last_video_time_stuck_count >= 10:
+                                    log.info(f"⚠️ 视频卡住 10s，认为广告结束")
                                     time.sleep(2)
                                     return True
                             else:
@@ -635,7 +658,7 @@ def handle_ad_popup(sb) -> bool:
             time.sleep(1)
 
     if ad_detected:
-        log.info("📺 广告处理超时（60s），继续后续流程")
+        log.info("📺 广告处理超时（90s），继续后续流程")
         return True
     else:
         log.info("📺 未检测到广告弹窗，可能按钮没生效或已直接给时间")
@@ -1174,12 +1197,14 @@ def run():
             log.info("📺 检查广告弹窗...")
             ad_handled = handle_ad_popup(sb)
 
-            # Step 4.4: 等待续期生效（最长 120s）
+            # Step 4.4: 等待续期生效（最长 240s = 4 分钟）
             # 优先检测 cooldown 出现 = 成功（最可靠）
             # 其次检测时间增加 = 成功
-            log.info("⏳ 等待续期生效（最长 120s，检测 cooldown 或时间增加）...")
+            # 增加容错：时间减少 < 300s 也认为可能成功（页面倒计时未同步）
+            log.info("⏳ 等待续期生效（最长 240s，检测 cooldown 或时间增加）...")
             cooldown_detected = False
-            for wait_i in range(120):
+            time_increased = False
+            for wait_i in range(240):
                 time.sleep(1)
                 try:
                     # 优先检测：按钮文字是否变成冷却中（最可靠的成功标志）
@@ -1198,10 +1223,26 @@ def run():
                 except Exception:
                     pass
 
-                # 每 30s 打一次进度日志
+                # 每 30s 检测一次时间变化（容错判断）
                 if wait_i > 0 and wait_i % 30 == 0:
                     cur_sec = get_remaining_seconds(sb)
-                    log.info(f"  等待中 ({wait_i}s)，当前剩余: {cur_sec}s")
+                    elapsed_now = int(time.time() - click_time)
+                    if last_sec > 0 and cur_sec > 0:
+                        # 时间增加 = 一定成功
+                        if cur_sec > last_sec:
+                            log.info(f"✅ 时间增加确认成功 ({wait_i}s): {last_sec}s → {cur_sec}s")
+                            time_increased = True
+                            break
+                        # 容错：时间减少 < 300s（自然递减），继续等
+                        # 时间减少 > 300s 但 < 自然递减 + 60s，也继续等（页面未同步）
+                        natural_decrease = elapsed_now
+                        actual_decrease = last_sec - cur_sec
+                        if actual_decrease < natural_decrease + 60:
+                            log.info(f"  等待中 ({wait_i}s)，当前剩余: {cur_sec}s（自然递减中）")
+                        else:
+                            log.info(f"  等待中 ({wait_i}s)，当前剩余: {cur_sec}s（时间减少 {actual_decrease}s）")
+                    else:
+                        log.info(f"  等待中 ({wait_i}s)")
 
             # 再等 3 秒让时间更新
             sb.sleep(3)
@@ -1219,8 +1260,13 @@ def run():
                 success = True
                 delta = new_sec - last_sec if (new_sec > 0 and last_sec > 0) else 0
                 log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ✅ cooldown确认成功")
+            elif time_increased:
+                # 时间增加 = 成功
+                success = True
+                delta = new_sec - last_sec if (new_sec > 0 and last_sec > 0) else 0
+                log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ✅ 时间增加确认成功")
             elif last_sec > 0 and new_sec > 0:
-                # 没有 cooldown，看时间是否增加
+                # 都没检测到，最后看时间
                 expected_min = last_sec - elapsed - 30
                 success = new_sec > expected_min + 60
                 delta = new_sec - last_sec
@@ -1287,14 +1333,29 @@ def run():
 
 
 if __name__ == "__main__":
-    try:
-        run()
-    except KeyboardInterrupt:
-        log.info("用户中断")
-    except Exception as e:
-        log.exception(f"❌ 未捕获异常: {e}")
-        tg(f"❌ <b>gaming4free 续期崩溃</b>\n"
-           f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
-           f"⚠️ 错误: {str(e)[:200]}\n"
-           f"👤 用户: {USERNAME or '(未配置)'}")
-        sys.exit(1)
+    # 自动恢复：异常时重启最多 2 次
+    MAX_RESTART = 2
+    restart_count = 0
+    while restart_count <= MAX_RESTART:
+        try:
+            run()
+            break  # 正常结束，退出循环
+        except KeyboardInterrupt:
+            log.info("用户中断")
+            break
+        except Exception as e:
+            restart_count += 1
+            log.exception(f"❌ 未捕获异常 (第 {restart_count} 次): {e}")
+            if restart_count <= MAX_RESTART:
+                tg(f"❌ <b>gaming4free 续期异常</b>\n"
+                   f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                   f"⚠️ 错误: {str(e)[:200]}\n"
+                   f"🔄 自动重启中 ({restart_count}/{MAX_RESTART})")
+                log.info(f"🔄 60 秒后自动重启 ({restart_count}/{MAX_RESTART})...")
+                time.sleep(60)
+            else:
+                tg(f"❌ <b>gaming4free 续期崩溃</b>\n"
+                   f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                   f"⚠️ 错误: {str(e)[:200]}\n"
+                   f"🛑 已重启 {MAX_RESTART} 次仍失败，放弃")
+                sys.exit(1)
