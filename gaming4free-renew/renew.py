@@ -356,25 +356,49 @@ def click_renew_button(sb) -> bool:
     # 必须用统一的 JS 兜底逻辑（包含 Livewire API 调用），所以这里直接跳到兜底
     # 不再用 seleniumbase 的 sb.click() 因为它无法触发 wire:click
 
-    # 但还是先用 seleniumbase 检查按钮是否可见（用于冷却检测）
-    for sel in candidates[:6]:  # 只检查前 6 个 gaming4free 专用选择器
-        try:
-            if sb.is_element_visible(sel):
-                # 检查按钮是否处于冷却中（gaming4free 按钮文字会变成 'xx cd'）
-                try:
-                    btn_text = sb.get_text(sel).strip().lower()
-                except Exception:
-                    btn_text = ""
-                if btn_text and ("cd" in btn_text and "min" not in btn_text):
-                    log.info(f"⏳ 按钮 [{sel}] 处于冷却中（文字: {btn_text}），跳过点击")
-                    return False
-                if btn_text and "wait" in btn_text:
-                    log.info(f"⏳ 按钮 [{sel}] 显示等待中（文字: {btn_text}），跳过点击")
-                    return False
-                # 按钮可用，直接跳到 JS 兜底（用 Livewire API 点击）
-                break
-        except Exception:
-            continue
+    # 先用 JS 检查按钮是否存在 + 状态（比 seleniumbase 的 is_element_visible 更可靠）
+    try:
+        btn_info = sb.execute_script("""
+        (function(){
+            const btn = document.querySelector('button.rt-btn-free, .rt-btn-free, button[wire\\\\:click="extendFree"]');
+            if (!btn) {
+                // 也检查一下页面上所有 button 文字，看是否有 90 min 或 cd
+                const all = document.querySelectorAll('button, a, [role="button"]');
+                const texts = [];
+                for (const el of all) {
+                    const t = (el.textContent || '').trim();
+                    if (t.length > 0 && t.length < 30) texts.push(t);
+                }
+                return 'not-found|buttons=' + texts.slice(0,15).join('||');
+            }
+            const t = (btn.textContent || '').trim().toLowerCase();
+            const rect = btn.getBoundingClientRect();
+            const visible = rect.width > 0 && rect.height > 0;
+            return 'found|text=' + t + '|visible=' + visible + '|disabled=' + btn.disabled;
+        })()
+        """)
+        log.info(f"按钮状态: {btn_info}")
+
+        if btn_info.startswith("found|"):
+            # 解析按钮文字
+            parts = btn_info.split("|")
+            text_part = ""
+            for p in parts:
+                if p.startswith("text="):
+                    text_part = p[5:]
+            # 检查冷却状态
+            if text_part and "cd" in text_part and "min" not in text_part:
+                log.info(f"⏳ 按钮处于冷却中（文字: {text_part}），跳过点击")
+                return False
+            if text_part and "wait" in text_part:
+                log.info(f"⏳ 按钮显示等待中（文字: {text_part}），跳过点击")
+                return False
+        elif btn_info.startswith("not-found|"):
+            # 按钮不存在，可能是服务器在 STOPPING 状态或页面没渲染好
+            log.warning(f"❌ rt-btn-free 按钮不存在。{btn_info}")
+            return False
+    except Exception as e:
+        log.warning(f"检查按钮状态失败: {e}")
 
     # 终极兜底：用 JS 直接调用 Livewire API（绕过 wire:click 的 isTrusted 检查）
     # gaming4free 按钮使用 Livewire wire:click="extendFree"
@@ -744,16 +768,37 @@ def run():
                             const m = href.match(/\\/server\\/([a-z0-9_-]+)/i);
                             if (m && m[1].length >= 3) {
                                 a.click();
-                                return href;
+                                return 'link: ' + href;
                             }
                         }
-                        // 兜底：找 OPEN 按钮（你截图里有 OPEN →）
-                        let btns = document.querySelectorAll('a, button, [role="button"]');
+                        // 兜底：找 OPEN / MANAGE / CONSOLE 按钮（宽松匹配）
+                        let btns = document.querySelectorAll('a, button, [role="button"], .btn');
                         for (let b of btns) {
                             const t = (b.textContent || '').trim().toLowerCase();
-                            if (t === 'open' || t === 'open →' || t === 'manage' || t === 'console') {
+                            // 匹配 open / open → / manage / console / 进入 等
+                            if (/^open/i.test(t) || /manage/i.test(t) || /console/i.test(t)
+                                || /进入/i.test(t) || /打开/i.test(t)) {
+                                // 跳过 disabled
+                                if (b.disabled || b.classList.contains('disabled')) continue;
                                 b.click();
                                 return 'button: ' + t;
+                            }
+                        }
+                        // 兜底2: 找任何带 href 的可点击元素
+                        let allLinks = document.querySelectorAll('a[href]');
+                        for (let a of allLinks) {
+                            const href = a.getAttribute('href') || '';
+                            const t = (a.textContent || '').trim().toLowerCase();
+                            // 跳过外链和导航链接
+                            if (href.startsWith('http') && !href.includes('gaming4free')) continue;
+                            if (/discord|billing|profile|settings|logout/i.test(href)) continue;
+                            // 找看起来像服务器入口的链接
+                            if (t.length > 0 && t.length < 30 && !/discord|claim|join/i.test(t)) {
+                                // 优先选短文本链接（如服务器名 "kuys"）
+                                if (t === 'kuys' || /minecraft/i.test(t) || /paper/i.test(t)) {
+                                    a.click();
+                                    return 'link-by-name: ' + t + ' -> ' + href;
+                                }
                             }
                         }
                         return '';
@@ -779,6 +824,21 @@ def run():
                         save_body_text(sb, "server_page")
                     else:
                         log.warning("⚠️ 未找到服务器入口，可能需要手动指定 GF_SITE_URL")
+                        # 保存当前页面所有链接方便调试
+                        try:
+                            all_hrefs = sb.execute_script("""
+                            (function(){
+                                const links = document.querySelectorAll('a[href]');
+                                const result = [];
+                                for (const a of links) {
+                                    result.push(a.getAttribute('href') + ' | ' + (a.textContent||'').trim().substring(0,30));
+                                }
+                                return result.join('\\n');
+                            })()
+                            """)
+                            log.info(f"页面所有链接:\n{all_hrefs}")
+                        except Exception:
+                            pass
                 except Exception as e:
                     log.warning(f"点进服务器失败: {e}")
         except Exception as e:
