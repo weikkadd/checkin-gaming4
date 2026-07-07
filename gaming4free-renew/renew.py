@@ -457,6 +457,118 @@ def click_renew_button(sb) -> bool:
     return False
 
 
+def handle_ad_popup(sb) -> bool:
+    """处理 gaming4free 的"watch ad"广告弹窗
+
+    点击 'watch ad · +90 min' 按钮后会弹出广告，必须：
+    1. 等广告加载（通常是 video iframe）
+    2. 等广告播放完（15-30秒）
+    3. 找 "Skip Ad" / "Close" / "Skip" 按钮点击
+    4. 时间才会增加
+
+    返回 True 如果检测到广告并处理了，False 如果没检测到广告
+    """
+    log.info("📺 检测广告弹窗（最长等 60s）...")
+
+    # 先等 3 秒让广告弹窗加载
+    time.sleep(3)
+
+    # 检测广告 iframe（常见广告网络）
+    ad_detected = False
+    for i in range(60):
+        try:
+            # 用 driver.execute_script 检测广告
+            ad_status = sb.driver.execute_script(
+                "var iframes = document.querySelectorAll('iframe');"
+                "var adIframes = [];"
+                "for (var i = 0; i < iframes.length; i++) {"
+                "  var src = iframes[i].src || '';"
+                "  var w = iframes[i].getBoundingClientRect().width;"
+                "  var h = iframes[i].getBoundingClientRect().height;"
+                "  if (w > 200 && h > 100 && (src.indexOf('ad') >= 0 || src.indexOf('vungle') >= 0 || src.indexOf('unity') >= 0 || src.indexOf('reward') >= 0 || src.indexOf('video') >= 0 || src === '')) {"
+                "    adIframes.push(src.substring(0, 80) + ' (' + w + 'x' + h + ')');"
+                "  }"
+                "}"
+                # 检测 video 元素
+                "var videos = document.querySelectorAll('video');"
+                "var videoInfo = [];"
+                "for (var v = 0; v < videos.length; v++) {"
+                "  var vw = videos[v].getBoundingClientRect().width;"
+                "  var vh = videos[v].getBoundingClientRect().height;"
+                "  if (vw > 100 && vh > 100) videoInfo.push('video ' + vw + 'x' + vh + ' paused=' + videos[v].paused + ' time=' + Math.round(videos[v].currentTime));"
+                "}"
+                # 检测 Skip / Close 按钮
+                "var skipBtns = document.querySelectorAll('button, a, [role=button], .btn');"
+                "var skipInfo = [];"
+                "for (var s = 0; s < skipBtns.length; s++) {"
+                "  var t = (skipBtns[s].textContent || '').trim().toLowerCase();"
+                "  if (/skip|close|×|✕|reward|claim|got it|done/i.test(t) && t.length < 20) {"
+                "    skipInfo.push(t);"
+                "  }"
+                "}"
+                "return JSON.stringify({ad: adIframes, video: videoInfo, skip: skipInfo});"
+            )
+            if ad_status and ad_status != '{"ad":[],"video":[],"skip":[]}':
+                ad_detected = True
+                if i % 5 == 0 or i < 5:
+                    log.info(f"📺 广告状态 ({i}s): {ad_status}")
+
+                # 如果有 Skip / Close 按钮，点击它
+                import json
+                try:
+                    data = json.loads(ad_status)
+                    if data.get("skip"):
+                        log.info(f"🎯 发现 Skip/Close 按钮: {data['skip']}")
+                        # 点击第一个 skip 按钮
+                        clicked_skip = sb.driver.execute_script(
+                            "var skipBtns = document.querySelectorAll('button, a, [role=button], .btn');"
+                            "for (var s = 0; s < skipBtns.length; s++) {"
+                            "  var t = (skipBtns[s].textContent || '').trim().toLowerCase();"
+                            "  if (/skip|close|×|✕|reward|claim|got it|done/i.test(t) && t.length < 20) {"
+                            "    skipBtns[s].click();"
+                            "    return t;"
+                            "  }"
+                            "}"
+                            "return '';"
+                        )
+                        if clicked_skip:
+                            log.info(f"✅ 点击了 Skip/Close 按钮 [{clicked_skip}]")
+                            time.sleep(3)
+                            return True
+                except Exception:
+                    pass
+
+                # 如果有 video 在播放，等它播完
+                try:
+                    data = json.loads(ad_status)
+                    if data.get("video"):
+                        for v_info in data["video"]:
+                            if "paused=false" in v_info:
+                                log.info(f"⏳ 广告视频播放中，继续等...")
+                                time.sleep(2)
+                                break
+                except Exception:
+                    pass
+
+            elif ad_detected:
+                # 之前检测到广告，现在没了，可能播完了
+                log.info(f"✅ 广告可能已结束 ({i}s)")
+                return True
+
+            time.sleep(1)
+        except Exception as e:
+            if i == 0:
+                log.warning(f"广告检测异常: {e}")
+            time.sleep(1)
+
+    if ad_detected:
+        log.info("📺 广告处理完成（超时退出）")
+        return True
+    else:
+        log.info("📺 未检测到广告弹窗")
+        return False
+
+
 def handle_turnstile(sb) -> bool:
     """处理 Cloudflare Turnstile，返回是否检测到并尝试通过"""
     try:
@@ -861,38 +973,28 @@ def run():
             human_sleep(1.0, 2.0)
             handle_turnstile(sb)
 
-            # Step 4.3: 等待 Livewire AJAX 响应
-            # gaming4free 用 Livewire，点击后需要等 AJAX 请求完成
+            # Step 4.3: 处理广告弹窗（gaming4free 按钮是 "watch ad · +90 min"）
+            # 点击后会弹出广告，必须看完广告或点击 Skip 才会加时间
             click_time = time.time()  # 记录点击时间戳
-            log.info("⏳ 等待 Livewire AJAX 响应（最长 30s）...")
+            log.info("📺 检查广告弹窗...")
+            ad_handled = handle_ad_popup(sb)
+
+            # Step 4.4: 等待 Livewire AJAX 响应 / 时间更新
+            log.info("⏳ 等待续期生效（最长 30s）...")
             for wait_i in range(30):
                 time.sleep(1)
                 try:
-                    # 检测 Livewire 是否还在处理请求
-                    loading = sb.execute_script("""
-                    (function(){
-                        // 检测 Livewire loading 状态
-                        if (window.Livewire) {
-                            const els = document.querySelectorAll('[wire\\\\:loading]');
-                            for (let el of els) {
-                                if (el.style.display !== 'none' && el.offsetParent !== null) {
-                                    return 'loading';
-                                }
-                            }
-                        }
-                        // 检测按钮文字是否变成冷却中（说明续期成功了）
-                        const btn = document.querySelector('button.rt-btn-free, .rt-btn-free');
-                        if (btn) {
-                            const t = (btn.textContent || '').trim().toLowerCase();
-                            if (/cd$/i.test(t) || /wait/i.test(t)) {
-                                return 'cooldown:' + t;
-                            }
-                        }
-                        return '';
-                    })()
-                    """)
+                    # 检测按钮文字是否变成冷却中（说明续期成功了）
+                    loading = sb.driver.execute_script(
+                        "var btn = document.querySelector('button.rt-btn-free, .rt-btn-free');"
+                        "if (btn) {"
+                        "  var t = (btn.textContent || '').trim().toLowerCase();"
+                        "  if (/cd$/i.test(t) || /wait/i.test(t)) return 'cooldown:' + t;"
+                        "}"
+                        "return '';"
+                    )
                     if loading and loading.startswith("cooldown:"):
-                        log.info(f"✅ 按钮进入冷却状态 [{loading}]，续期请求已处理")
+                        log.info(f"✅ 按钮进入冷却状态 [{loading}]，续期成功！")
                         break
                 except Exception:
                     pass
