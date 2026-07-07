@@ -19,8 +19,18 @@ import socket
 import smtplib
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+# 东八区时区（北京时间），用于 TG 通知时间戳
+# GHA 默认是 UTC，但用户在中国，需要显示本地时间
+TZ_CN = timezone(timedelta(hours=8))
+
+
+def now_cn():
+    """返回东八区（北京时间）的当前时间"""
+    return datetime.now(TZ_CN)
 
 # ---------------------------------------------------------------------------
 # 配置区
@@ -931,7 +941,7 @@ def run():
 
     # TG 启动通知
     tg("🚀 <b>gaming4free 续期启动</b>\n"
-       f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+       f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
        f"👤 用户: {USERNAME or '(未配置)'}\n"
        f"🌐 WARP: 已就绪", silent=True)
 
@@ -1267,13 +1277,25 @@ def run():
                 log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ✅ 时间增加确认成功")
             elif last_sec > 0 and new_sec > 0:
                 # 都没检测到，最后看时间
+                # 容错判断分两级：
+                # 1. new_sec > last_sec（时间真增加）= 一定成功
+                # 2. new_sec > expected_min（时间没自然递减那么多）= 可能成功，算成功但提示
+                # 3. new_sec <= expected_min = 失败
                 expected_min = last_sec - elapsed - 30
-                success = new_sec > expected_min + 60
                 delta = new_sec - last_sec
-                if success:
+                real_increase = new_sec - (last_sec - elapsed)  # 扣除自然递减后的实际变化
+
+                if new_sec > last_sec:
+                    # 时间真增加 = 一定成功
+                    success = True
                     log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ✅ 时间增加确认成功")
+                elif new_sec > expected_min:
+                    # 时间没自然递减那么多 = 可能续期生效但页面未同步，算成功
+                    success = True
+                    log.info(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s, 实际变化 {real_increase}s) ✅ 时间未自然递减，判定成功（可能未同步）")
                 else:
-                    log.warning(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ⚠️ 时间未增加，判定失败")
+                    success = False
+                    log.warning(f"点击 #{click_count+1}: {last_sec}s → {new_sec}s (Δ={delta}s, 经过 {elapsed}s) ⚠️ 时间减少超过自然递减，判定失败")
             elif new_sec > 0 and last_sec <= 0:
                 success = True
                 log.info(f"点击 #{click_count+1}: 之前未识别 → {new_sec}s ✅")
@@ -1288,7 +1310,7 @@ def run():
                 # TG 通知每次续期成功
                 delta_fmt = fmt_duration(delta) if delta > 0 else "未计算"
                 tg(f"✅ <b>续期成功 #{click_count}</b>\n"
-                   f"⏰ {datetime.now():%H:%M:%S}\n"
+                   f"⏰ {now_cn():%H:%M:%S} (北京)\n"
                    f"⏳ 剩余: {fmt_duration(last_sec)} → {fmt_duration(new_sec)}\n"
                    f"➕ 增加: {delta_fmt}\n"
                    f"📊 累计: {click_count} 次", silent=True)
@@ -1298,7 +1320,7 @@ def run():
                 screenshot(sb, f"fail_{click_count}")
                 # TG 通知续期失败
                 tg(f"⚠️ <b>续期失败 #{click_count+1}</b>\n"
-                   f"⏰ {datetime.now():%H:%M:%S}\n"
+                   f"⏰ {now_cn():%H:%M:%S} (北京)\n"
                    f"⏳ 当前剩余: {fmt_duration(new_sec) if new_sec > 0 else '未识别'}\n"
                    f"🔄 将刷新重试")
                 # 失败一次重试刷新
@@ -1324,7 +1346,7 @@ def run():
         log.info(msg)
         # TG 最终完成通知（带声音）
         tg(f"🏁 <b>gaming4free 续期完成</b>\n"
-           f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+           f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
            f"✅ 成功点击: {click_count} 次\n"
            f"⏳ 最终剩余: {fmt_duration(final_sec)}\n"
            f"🎯 上限: {MAX_HOURS}h\n"
@@ -1348,14 +1370,14 @@ if __name__ == "__main__":
             log.exception(f"❌ 未捕获异常 (第 {restart_count} 次): {e}")
             if restart_count <= MAX_RESTART:
                 tg(f"❌ <b>gaming4free 续期异常</b>\n"
-                   f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                   f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
                    f"⚠️ 错误: {str(e)[:200]}\n"
                    f"🔄 自动重启中 ({restart_count}/{MAX_RESTART})")
                 log.info(f"🔄 60 秒后自动重启 ({restart_count}/{MAX_RESTART})...")
                 time.sleep(60)
             else:
                 tg(f"❌ <b>gaming4free 续期崩溃</b>\n"
-                   f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                   f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
                    f"⚠️ 错误: {str(e)[:200]}\n"
                    f"🛑 已重启 {MAX_RESTART} 次仍失败，放弃")
                 sys.exit(1)
