@@ -356,30 +356,32 @@ def click_renew_button(sb) -> bool:
     # 必须用统一的 JS 兜底逻辑（包含 Livewire API 调用），所以这里直接跳到兜底
     # 不再用 seleniumbase 的 sb.click() 因为它无法触发 wire:click
 
-    # 先用 JS 检查按钮是否存在 + 状态（比 seleniumbase 的 is_element_visible 更可靠）
+    # 先用 JS 检查按钮是否存在 + 状态
+    # 注意：用 sb.driver.execute_script 比 sb.execute_script 更稳定
+    # 避免 UC mode + CDP 复杂转义导致返回 None
     try:
-        btn_info = sb.execute_script("""
-        (function(){
-            const btn = document.querySelector('button.rt-btn-free, .rt-btn-free, button[wire\\\\:click="extendFree"]');
-            if (!btn) {
-                // 也检查一下页面上所有 button 文字，看是否有 90 min 或 cd
-                const all = document.querySelectorAll('button, a, [role="button"]');
-                const texts = [];
-                for (const el of all) {
-                    const t = (el.textContent || '').trim();
-                    if (t.length > 0 && t.length < 30) texts.push(t);
-                }
-                return 'not-found|buttons=' + texts.slice(0,15).join('||');
-            }
-            const t = (btn.textContent || '').trim().toLowerCase();
-            const rect = btn.getBoundingClientRect();
-            const visible = rect.width > 0 && rect.height > 0;
-            return 'found|text=' + t + '|visible=' + visible + '|disabled=' + btn.disabled;
-        })()
-        """)
+        # 简化 JS：不用 wire:click 选择器（避免转义问题），只用 class
+        btn_info = sb.driver.execute_script(
+            "var btn = document.querySelector('button.rt-btn-free, .rt-btn-free');"
+            "if (!btn) {"
+            "  var all = document.querySelectorAll('button, a, [role=button]');"
+            "  var texts = [];"
+            "  for (var i = 0; i < all.length && i < 15; i++) {"
+            "    var t = (all[i].textContent || '').trim();"
+            "    if (t.length > 0 && t.length < 30) texts.push(t);"
+            "  }"
+            "  return 'not-found|buttons=' + texts.join('||');"
+            "}"
+            "var t = (btn.textContent || '').trim().toLowerCase();"
+            "var r = btn.getBoundingClientRect();"
+            "var v = r.width > 0 && r.height > 0;"
+            "return 'found|text=' + t + '|visible=' + v + '|disabled=' + btn.disabled;"
+        )
+        if btn_info is None:
+            btn_info = "error|execute_script returned None"
         log.info(f"按钮状态: {btn_info}")
 
-        if btn_info.startswith("found|"):
+        if btn_info and btn_info.startswith("found|"):
             # 解析按钮文字
             parts = btn_info.split("|")
             text_part = ""
@@ -393,71 +395,61 @@ def click_renew_button(sb) -> bool:
             if text_part and "wait" in text_part:
                 log.info(f"⏳ 按钮显示等待中（文字: {text_part}），跳过点击")
                 return False
-        elif btn_info.startswith("not-found|"):
+        elif btn_info and btn_info.startswith("not-found|"):
             # 按钮不存在，可能是服务器在 STOPPING 状态或页面没渲染好
             log.warning(f"❌ rt-btn-free 按钮不存在。{btn_info}")
             return False
+        else:
+            log.warning(f"❌ 按钮状态异常: {btn_info}")
+            return False
     except Exception as e:
         log.warning(f"检查按钮状态失败: {e}")
+        return False
 
     # 终极兜底：用 JS 直接调用 Livewire API（绕过 wire:click 的 isTrusted 检查）
     # gaming4free 按钮使用 Livewire wire:click="extendFree"
     # 合成的 .click() 无法触发 wire:click，必须用 Livewire.find(id).call('extendFree')
+    # 注意：用 sb.driver.execute_script（selenium 原生）比 sb.execute_script 稳定
     try:
-        clicked = sb.execute_script("""
-        (function(){
-            // 优先按 gaming4free 专用 class 找
-            let btn = document.querySelector('button.rt-btn-free, .rt-btn-free, button[wire\\\\:click="extendFree"]');
-            if (btn) {
-                const t = (btn.textContent || '').trim().toLowerCase();
-                // 冷却中：文字是 'xx cd' 或包含 'wait'，不点击
-                if ((/cd$/i.test(t) && !/min/i.test(t)) || /wait/i.test(t)) {
-                    return 'cooldown: ' + t;
-                }
-                if (btn.disabled) {
-                    return 'disabled: ' + t;
-                }
-
-                // 方法 1: 直接调用 Livewire API（最可靠）
-                if (window.Livewire) {
-                    // 找到按钮所在的 Livewire 组件
-                    let comp = btn.closest('[wire\\\\:id]');
-                    if (comp) {
-                        const cid = comp.getAttribute('wire:id');
-                        try {
-                            Livewire.find(cid).call('extendFree');
-                            return 'livewire-direct: extendFree called (component=' + cid + ', text=' + t + ')';
-                        } catch(e) {
-                            // Livewire.call 失败，继续尝试其他方法
-                        }
-                    }
-                    // 兜底：用 Livewire.dispatch 触发
-                    try {
-                        Livewire.dispatch('extendFree');
-                        return 'livewire-dispatch: extendFree';
-                    } catch(e) {}
-                }
-
-                // 方法 2: 模拟真实鼠标事件序列（mousedown → mouseup → click）
-                btn.scrollIntoView({block:'center'});
-                const rect = btn.getBoundingClientRect();
-                const x = rect.left + rect.width/2;
-                const y = rect.top + rect.height/2;
-                const opts = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0, buttons:1, isTrusted:true};
-                btn.dispatchEvent(new MouseEvent('mousedown', opts));
-                btn.dispatchEvent(new MouseEvent('mouseup', opts));
-                btn.dispatchEvent(new MouseEvent('click', opts));
-                return 'mouse-event: ' + t;
-            }
-            return '';
-        })()
-        """)
+        clicked = sb.driver.execute_script(
+            "var btn = document.querySelector('button.rt-btn-free, .rt-btn-free');"
+            "if (!btn) return '';"
+            "var t = (btn.textContent || '').trim().toLowerCase();"
+            "if ((/cd$/i.test(t) && !/min/i.test(t)) || /wait/i.test(t)) return 'cooldown: ' + t;"
+            "if (btn.disabled) return 'disabled: ' + t;"
+            # 方法1: Livewire API
+            "if (window.Livewire) {"
+            "  var comp = btn.closest('[wire\\\\:id]');"
+            "  if (comp) {"
+            "    var cid = comp.getAttribute('wire:id');"
+            "    try {"
+            "      Livewire.find(cid).call('extendFree');"
+            "      return 'livewire-direct: extendFree (comp=' + cid + ', text=' + t + ')';"
+            "    } catch(e) {}"
+            "  }"
+            "  try {"
+            "    Livewire.dispatch('extendFree');"
+            "    return 'livewire-dispatch: extendFree';"
+            "  } catch(e) {}"
+            "}"
+            # 方法2: 模拟真实鼠标事件
+            "btn.scrollIntoView({block:'center'});"
+            "var r = btn.getBoundingClientRect();"
+            "var x = r.left + r.width/2, y = r.top + r.height/2;"
+            "var opts = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0, buttons:1};"
+            "btn.dispatchEvent(new MouseEvent('mousedown', opts));"
+            "btn.dispatchEvent(new MouseEvent('mouseup', opts));"
+            "btn.dispatchEvent(new MouseEvent('click', opts));"
+            "return 'mouse-event: ' + t;"
+        )
         if clicked:
             if clicked.startswith("cooldown:") or clicked.startswith("disabled:"):
                 log.info(f"⏳ JS 检测按钮处于冷却/禁用状态 [{clicked}]，跳过点击")
                 return False
             log.info(f"✅ JS 兜底点击续期按钮 [{clicked}]")
             return True
+        else:
+            log.warning("❌ JS 返回空，按钮可能不存在")
     except Exception as e:
         log.warning(f"JS 兜底点击失败: {e}")
 
@@ -756,55 +748,39 @@ def run():
                 log.info("📋 当前在服务器列表页，尝试点进具体服务器...")
 
                 # 方案 1: 用 JS 找到第一个服务器卡片/链接并点击
+                # 用 sb.driver.execute_script 比 sb.execute_script 稳定
                 try:
-                    clicked = sb.execute_script("""
-                    (function(){
-                        // gaming4free 服务器卡片通常是可点击的 div / a
-                        // 优先找带 /server/{id} 路径的链接（id 可能是数字或字符串如 fb928b12）
-                        let links = document.querySelectorAll('a[href*="/server/"]');
-                        for (let a of links) {
-                            const href = a.getAttribute('href') || '';
-                            // 匹配 /server/xxx 但排除 /servers 列表页本身
-                            const m = href.match(/\\/server\\/([a-z0-9_-]+)/i);
-                            if (m && m[1].length >= 3) {
-                                a.click();
-                                return 'link: ' + href;
-                            }
-                        }
-                        // 兜底：找 OPEN / MANAGE / CONSOLE 按钮（宽松匹配）
-                        let btns = document.querySelectorAll('a, button, [role="button"], .btn');
-                        for (let b of btns) {
-                            const t = (b.textContent || '').trim().toLowerCase();
-                            // 匹配 open / open → / manage / console / 进入 等
-                            if (/^open/i.test(t) || /manage/i.test(t) || /console/i.test(t)
-                                || /进入/i.test(t) || /打开/i.test(t)) {
-                                // 跳过 disabled
-                                if (b.disabled || b.classList.contains('disabled')) continue;
-                                b.click();
-                                return 'button: ' + t;
-                            }
-                        }
-                        // 兜底2: 找任何带 href 的可点击元素
-                        let allLinks = document.querySelectorAll('a[href]');
-                        for (let a of allLinks) {
-                            const href = a.getAttribute('href') || '';
-                            const t = (a.textContent || '').trim().toLowerCase();
-                            // 跳过外链和导航链接
-                            if (href.startsWith('http') && !href.includes('gaming4free')) continue;
-                            if (/discord|billing|profile|settings|logout/i.test(href)) continue;
-                            // 找看起来像服务器入口的链接
-                            if (t.length > 0 && t.length < 30 && !/discord|claim|join/i.test(t)) {
-                                // 优先选短文本链接（如服务器名 "kuys"）
-                                if (t === 'kuys' || /minecraft/i.test(t) || /paper/i.test(t)) {
-                                    a.click();
-                                    return 'link-by-name: ' + t + ' -> ' + href;
-                                }
-                            }
-                        }
-                        return '';
-                    })()
-                    """)
-                    if clicked:
+                    clicked = sb.driver.execute_script(
+                        "var links = document.querySelectorAll('a[href*=\"/server/\"]');"
+                        "for (var i = 0; i < links.length; i++) {"
+                        "  var href = links[i].getAttribute('href') || '';"
+                        "  var m = href.match(/\\/server\\/([a-z0-9_-]+)/i);"
+                        "  if (m && m[1].length >= 3) {"
+                        "    links[i].click();"
+                        "    return 'link: ' + href;"
+                        "  }"
+                        "}"
+                        # 兜底：找 OPEN / MANAGE / CONSOLE 按钮
+                        "var btns = document.querySelectorAll('a, button, [role=button], .btn');"
+                        "for (var j = 0; j < btns.length; j++) {"
+                        "  var t = (btns[j].textContent || '').trim().toLowerCase();"
+                        "  if (/^open/i.test(t) || /manage/i.test(t) || /console/i.test(t)) {"
+                        "    if (btns[j].disabled) continue;"
+                        "    btns[j].click();"
+                        "    return 'button: ' + t;"
+                        "  }"
+                        "}"
+                        # 兜底2: 找所有链接里看起来像服务器的
+                        "var allLinks = document.querySelectorAll('a[href]');"
+                        "var found = [];"
+                        "for (var k = 0; k < allLinks.length; k++) {"
+                        "  var h = allLinks[k].getAttribute('href') || '';"
+                        "  var txt = (allLinks[k].textContent || '').trim();"
+                        "  if (h && txt && txt.length < 30) found.push(h + ' | ' + txt.substring(0,30));"
+                        "}"
+                        "return 'links-debug:\\n' + found.join('\\n');"
+                    )
+                    if clicked and not clicked.startswith("links-debug:"):
                         log.info(f"✅ 点击进入服务器: {clicked}")
                         sb.sleep(3)
                         # 等服务器页面加载
@@ -823,22 +799,9 @@ def run():
                         screenshot(sb, "server_page")
                         save_body_text(sb, "server_page")
                     else:
-                        log.warning("⚠️ 未找到服务器入口，可能需要手动指定 GF_SITE_URL")
-                        # 保存当前页面所有链接方便调试
-                        try:
-                            all_hrefs = sb.execute_script("""
-                            (function(){
-                                const links = document.querySelectorAll('a[href]');
-                                const result = [];
-                                for (const a of links) {
-                                    result.push(a.getAttribute('href') + ' | ' + (a.textContent||'').trim().substring(0,30));
-                                }
-                                return result.join('\\n');
-                            })()
-                            """)
-                            log.info(f"页面所有链接:\n{all_hrefs}")
-                        except Exception:
-                            pass
+                        log.warning("⚠️ 未找到服务器入口")
+                        if clicked:
+                            log.info(f"页面所有链接:\n{clicked}")
                 except Exception as e:
                     log.warning(f"点进服务器失败: {e}")
         except Exception as e:
