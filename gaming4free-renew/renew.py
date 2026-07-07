@@ -63,18 +63,42 @@ log = logging.getLogger("renew")
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
-def tg(msg: str):
-    """Telegram 通知（失败不影响主流程）"""
+def tg(msg: str, silent: bool = False):
+    """Telegram 通知（失败不影响主流程）
+
+    Args:
+        msg: 消息内容
+        silent: 是否静默发送（无通知音）
+    """
     if not (TG_TOKEN and TG_CHAT_ID):
         return
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            json={
+                "chat_id": TG_CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_notification": silent,
+            },
             timeout=10,
         )
     except Exception as e:
         log.warning(f"TG 通知失败: {e}")
+
+
+def fmt_duration(sec: int) -> str:
+    """秒数格式化为 'Xh Ym' 或 'Xm Ys'"""
+    if sec < 0:
+        return "未知"
+    if sec >= 3600:
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        return f"{h}h {m}m"
+    else:
+        m = sec // 60
+        s = sec % 60
+        return f"{m}m {s}s"
 
 
 def parse_remaining_seconds(text: str) -> int:
@@ -847,6 +871,12 @@ def run():
     log.info(f"MC 用户:  {USERNAME or '(未配置)'}")
     log.info("=" * 60)
 
+    # TG 启动通知
+    tg("🚀 <b>gaming4free 续期启动</b>\n"
+       f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+       f"👤 用户: {USERNAME or '(未配置)'}\n"
+       f"🌐 WARP: 已就绪", silent=True)
+
     # 预检 WARP
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1044,6 +1074,9 @@ def run():
         last_sec = get_remaining_seconds(sb)
         if last_sec > 0:
             log.info(f"初始剩余: {last_sec}s ({last_sec//3600}h {(last_sec%3600)//60}m)")
+            tg(f"📊 <b>当前剩余时间</b>\n"
+               f"⏳ {fmt_duration(last_sec)}\n"
+               f"🎯 上限: {MAX_HOURS}h", silent=True)
         else:
             log.info("初始剩余: 未识别")
 
@@ -1051,6 +1084,10 @@ def run():
             # 接近上限就停（剩 30 分钟以内就停，避免溢出）
             if last_sec > 0 and last_sec >= (MAX_HOURS * 3600 - 1800):
                 log.info(f"🎉 已接近 {MAX_HOURS}h 上限，停止续期")
+                tg(f"🎉 <b>已达到 {MAX_HOURS}h 上限</b>\n"
+                   f"⏳ 当前剩余: {fmt_duration(last_sec)}\n"
+                   f"✅ 本次共续期 {click_count} 次\n"
+                   f"🛑 不再继续，等下次 cron")
                 break
 
             # Step 4.0: 点击前检测 Turnstile（可能在页面交互时弹出）
@@ -1167,10 +1204,22 @@ def run():
                 click_count += 1
                 log.info(f"✅ 续期成功 (累计 {click_count} 次)")
                 screenshot(sb, f"success_{click_count}")
+                # TG 通知每次续期成功
+                delta_fmt = fmt_duration(delta) if delta > 0 else "未计算"
+                tg(f"✅ <b>续期成功 #{click_count}</b>\n"
+                   f"⏰ {datetime.now():%H:%M:%S}\n"
+                   f"⏳ 剩余: {fmt_duration(last_sec)} → {fmt_duration(new_sec)}\n"
+                   f"➕ 增加: {delta_fmt}\n"
+                   f"📊 累计: {click_count} 次", silent=True)
                 last_sec = new_sec
             else:
                 log.warning(f"⚠️ 续期可能失败")
                 screenshot(sb, f"fail_{click_count}")
+                # TG 通知续期失败
+                tg(f"⚠️ <b>续期失败 #{click_count+1}</b>\n"
+                   f"⏰ {datetime.now():%H:%M:%S}\n"
+                   f"⏳ 当前剩余: {fmt_duration(new_sec) if new_sec > 0 else '未识别'}\n"
+                   f"🔄 将刷新重试")
                 # 失败一次重试刷新
                 sb.refresh()
                 sb.sleep(3)
@@ -1192,7 +1241,13 @@ def run():
                f"成功点击: {click_count} 次\n"
                f"最终剩余: {h}h {m}m")
         log.info(msg)
-        tg(msg)
+        # TG 最终完成通知（带声音）
+        tg(f"🏁 <b>gaming4free 续期完成</b>\n"
+           f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+           f"✅ 成功点击: {click_count} 次\n"
+           f"⏳ 最终剩余: {fmt_duration(final_sec)}\n"
+           f"🎯 上限: {MAX_HOURS}h\n"
+           f"👤 用户: {USERNAME or '(未配置)'}")
         screenshot(sb, "final")
 
 
@@ -1203,5 +1258,8 @@ if __name__ == "__main__":
         log.info("用户中断")
     except Exception as e:
         log.exception(f"❌ 未捕获异常: {e}")
-        tg(f"❌ gaming4free 续期崩溃\n{e}")
+        tg(f"❌ <b>gaming4free 续期崩溃</b>\n"
+           f"⏰ {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+           f"⚠️ 错误: {str(e)[:200]}\n"
+           f"👤 用户: {USERNAME or '(未配置)'}")
         sys.exit(1)
