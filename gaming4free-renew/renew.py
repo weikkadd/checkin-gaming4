@@ -509,7 +509,16 @@ def run_script():
                 log("⏳ 等待 20 秒后继续...")
                 time.sleep(20)
 
-        log("\n🎉 所有服务器均已达到48小时上限!")
+        # 检查是否真的续期成功
+        all_success = all(remaining[name] + 90 * 60 > TARGET_SECONDS for name, _ in ACCOUNTS)
+        if all_success:
+            log("\n🎉 所有服务器均已达到48小时上限!")
+        else:
+            log("\n❌ 达到最大重试次数, 部分服务器未续期成功")
+            for name, _ in ACCOUNTS:
+                secs = remaining[name]
+                if secs + 90 * 60 <= TARGET_SECONDS:
+                    log(f"   ❌ {name}: 未续期成功 (剩余 {secs//3600}h)")
 
     # TG 通知
     log("\n📋 推送 TG 通知...")
