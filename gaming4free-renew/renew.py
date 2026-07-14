@@ -61,19 +61,14 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
 TG_TOKEN   = os.environ.get("TG_BOT_TOKEN", "").strip()
 
 raw_accounts = os.environ.get("GAME4FREE_ACCOUNT", "").strip().splitlines()
-log(f"📋 GAME4FREE_ACCOUNT 原始内容长度: {len(os.environ.get('GAME4FREE_ACCOUNT', ''))}")
-log(f"📋 解析到 {len(raw_accounts)} 行")
 ACCOUNTS = []
 for line in raw_accounts:
     line = line.strip()
     if not line:
         continue
     parts = line.split(",", 1)
-    log(f"📋 解析行: '{line[:80]}...' → {len(parts)} 部分")
     if len(parts) == 2:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip()))
-    else:
-        log(f"⚠️ 该行没有逗号分隔，跳过：{line[:80]}")
 
 
 def now_str():
@@ -82,6 +77,14 @@ def now_str():
 
 def log(msg):
     print(f"{msg}", flush=True)
+
+# 调试: 打印 GAME4FREE_ACCOUNT 实际内容
+_gf_raw = os.environ.get("GAME4FREE_ACCOUNT", "")
+log(f"📋 GAME4FREE_ACCOUNT 长度: {len(_gf_raw)}")
+log(f"📋 GAME4FREE_ACCOUNT 内容: '{_gf_raw[:200]}'")
+log(f"📋 解析到 {len(ACCOUNTS)} 个账号")
+for name, url in ACCOUNTS:
+    log(f"   账号: {name} → {url}")
 
 
 MC_PREFIXES = [
