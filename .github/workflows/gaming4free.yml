@@ -35,30 +35,35 @@ jobs:
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      - name: 🔗 设置代理 (sing-box, 复用 katabump 同款)
-        continue-on-error: true
-        env:
-          NODE_LINK: ${{ secrets.PROXY_URL }}
-        run: |
-          if [ -n "$NODE_LINK" ]; then
-            PROTO=$(echo "$NODE_LINK" | cut -d':' -f1)
-            echo "[INFO] PROXY_URL 协议: $PROTO"
-            bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
-          else
-            echo "[WARN] PROXY_URL 未配置, 直连模式"
-          fi
+      - name: 🛡️ 启用 WARP 网络
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual
+          mode: client
 
-      - name: 🚀 运行续期脚本
+      - name: 🔧 修复 DNS
+        run: |
+          sudo systemctl stop systemd-resolved 2>/dev/null || true
+          sudo systemctl disable systemd-resolved 2>/dev/null || true
+          sudo rm -f /etc/resolv.conf
+          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          sleep 2
+          echo "[INFO] 当前出口 IP:"
+          curl -s --max-time 10 https://api.ipify.org && echo
+          echo "[INFO] WARP Trace:"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+
+      - name: 🚀 运行续期脚本 (WARP 代理)
         env:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GAME4FREE_ACCOUNT: ${{ secrets.GAME4FREE_ACCOUNT }}
-          IS_PROXY: ${{ env.IS_PROXY }}
-          PROXY_SERVER: ${{ env.PROXY_SERVER }}
+          IS_PROXY: 'true'
+          PROXY_SERVER: 'socks5://127.0.0.1:40000'
         working-directory: gaming4free-renew
         run: |
-          echo "代理状态: IS_PROXY=${IS_PROXY:-false}, PROXY_SERVER=${PROXY_SERVER:-无}"
+          echo "代理: WARP (socks5://127.0.0.1:40000)"
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
       - name: 📸 上传截图
