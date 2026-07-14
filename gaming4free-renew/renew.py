@@ -195,32 +195,45 @@ def solve_turnstile(sb):
         return True
 
     time.sleep(1.5)
+
+    # 方法 1: 用 SeleniumBase 内置的 uc_gui_click_captcha (最可靠)
+    for attempt in range(3):
+        log(f"🛡️ uc_gui_click_captcha 尝试 {attempt+1}/3...")
+        try:
+            sb.uc_gui_click_captcha()
+            time.sleep(3)
+            if get_turnstile_token(sb):
+                log("✅ Turnstile 验证通过! (uc_gui_click_captcha)")
+                return True
+        except Exception as e:
+            log(f"⚠️ uc_gui_click_captcha 异常: {e}")
+        time.sleep(2)
+
+    # 方法 2: 坐标点击 (兜底)
     result = sb.execute_script(GET_COORDS_JS)
-    if not result or result.get('error'):
-        # 无感盾, 等 token
-        for _ in range(60):
-            if get_turnstile_token(sb):
-                log("✅ 无感盾 token 已获取")
-                return True
-            time.sleep(0.5)
-        log("❌ 无感盾 token 等待超时")
-        return False
+    if result and not result.get('error'):
+        vp_x = result['vx']; vp_y = result['vy']
+        win_x = result['wx']; win_y = result['wy']
+        toolbar_h = result['oh'] - result['ih']
+        border_l = (result['ow'] - result['iw']) / 2 if result['ow'] > result['iw'] else 0
+        abs_x = int(vp_x + win_x + border_l)
+        abs_y = int(vp_y + win_y + toolbar_h)
 
-    vp_x = result['vx']; vp_y = result['vy']
-    win_x = result['wx']; win_y = result['wy']
-    toolbar_h = result['oh'] - result['ih']
-    border_l = (result['ow'] - result['iw']) / 2 if result['ow'] > result['iw'] else 0
-    abs_x = int(vp_x + win_x + border_l)
-    abs_y = int(vp_y + win_y + toolbar_h)
+        for click_num in range(3):
+            if click_num > 0: time.sleep(3)
+            xdotool_click(abs_x, abs_y, f"📐 坐标点击 {click_num+1}")
+            for _ in range(150):
+                if get_turnstile_token(sb):
+                    log("✅ Turnstile 验证通过! (坐标点击)")
+                    return True
+                time.sleep(0.1)
 
-    for click_num in range(3):
-        if click_num > 0: time.sleep(3)
-        xdotool_click(abs_x, abs_y, f"📐 坐标点击 {click_num+1}")
-        for _ in range(150):
-            if get_turnstile_token(sb):
-                log("✅ Turnstile 验证通过!")
-                return True
-            time.sleep(0.1)
+    # 方法 3: 无感盾, 等 token
+    for _ in range(60):
+        if get_turnstile_token(sb):
+            log("✅ 无感盾 token 已获取")
+            return True
+        time.sleep(0.5)
 
     log("❌ 人机验证超时")
     return False
