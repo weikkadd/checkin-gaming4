@@ -190,18 +190,25 @@ def solve_turnstile(sb):
         sb.execute_script(EXPAND_POPUP_JS)
         time.sleep(0.5)
 
+    # 先检查是否已自动通过
     if get_turnstile_token(sb):
         log("✅ 验证已自动通过")
         return True
 
-    time.sleep(1.5)
+    # 方法 0: 等 30 秒看无感盾是否自动通过 (WARP IP 通过率高)
+    log("⏳ 等待 Turnstile 自动验证 (30秒)...")
+    for i in range(60):
+        if get_turnstile_token(sb):
+            log(f"✅ Turnstile 自动通过! (等待 {i*0.5:.0f}s)")
+            return True
+        time.sleep(0.5)
 
-    # 方法 1: 用 SeleniumBase 内置的 uc_gui_click_captcha (最可靠)
+    # 方法 1: uc_gui_click_captcha
     for attempt in range(3):
         log(f"🛡️ uc_gui_click_captcha 尝试 {attempt+1}/3...")
         try:
             sb.uc_gui_click_captcha()
-            time.sleep(3)
+            time.sleep(5)
             if get_turnstile_token(sb):
                 log("✅ Turnstile 验证通过! (uc_gui_click_captcha)")
                 return True
@@ -227,13 +234,6 @@ def solve_turnstile(sb):
                     log("✅ Turnstile 验证通过! (坐标点击)")
                     return True
                 time.sleep(0.1)
-
-    # 方法 3: 无感盾, 等 token
-    for _ in range(60):
-        if get_turnstile_token(sb):
-            log("✅ 无感盾 token 已获取")
-            return True
-        time.sleep(0.5)
 
     log("❌ 人机验证超时")
     return False
