@@ -233,14 +233,30 @@ def renew_account(sb, server_name, renew_url):
     log("🔍 查找 +90 min 按钮...")
     if not click_plus_90(sb):
         log("❌ 未找到 +90 min 按钮")
-        # 打印所有按钮帮助诊断
+        # 打印所有按钮和链接文字帮助诊断
         try:
             btns = sb.execute_script("""
-                return Array.from(document.querySelectorAll('button, a[class*="btn"]'))
-                    .map(b => b.innerText.trim())
-                    .filter(t => t.length > 0 && t.length < 50);
+                var result = [];
+                document.querySelectorAll('button, a, [role="button"], [class*="btn"]').forEach(function(el) {
+                    var text = (el.innerText || '').trim();
+                    if (text.length > 0 && text.length < 80) result.push(text);
+                });
+                return result;
             """)
-            log(f"📋 页面所有按钮: {btns}")
+            log(f"📋 页面所有按钮/链接: {btns}")
+        except:
+            pass
+        # 也打印包含 90 的元素
+        try:
+            has90 = sb.execute_script("""
+                var result = [];
+                document.querySelectorAll('*').forEach(function(el) {
+                    var text = (el.innerText || '').trim();
+                    if (text.includes('90') && text.length < 50 && el.children.length === 0) result.push(el.tagName + ': ' + text);
+                });
+                return result.slice(0, 20);
+            """)
+            log(f"📋 包含 '90' 的元素: {has90}")
         except:
             pass
         sb.save_screenshot(f"no_btn_{server_name}.png")
