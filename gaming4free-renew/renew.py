@@ -60,15 +60,20 @@ LOCAL_PROXY = "http://127.0.0.1:8080"
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
 TG_TOKEN   = os.environ.get("TG_BOT_TOKEN", "").strip()
 
-raw_accounts = os.environ["GAME4FREE_ACCOUNT"].strip().splitlines()
+raw_accounts = os.environ.get("GAME4FREE_ACCOUNT", "").strip().splitlines()
+log(f"📋 GAME4FREE_ACCOUNT 原始内容长度: {len(os.environ.get('GAME4FREE_ACCOUNT', ''))}")
+log(f"📋 解析到 {len(raw_accounts)} 行")
 ACCOUNTS = []
 for line in raw_accounts:
     line = line.strip()
     if not line:
         continue
     parts = line.split(",", 1)
+    log(f"📋 解析行: '{line[:80]}...' → {len(parts)} 部分")
     if len(parts) == 2:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip()))
+    else:
+        log(f"⚠️ 该行没有逗号分隔，跳过：{line[:80]}")
 
 
 def now_str():
