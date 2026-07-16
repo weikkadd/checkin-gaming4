@@ -68,6 +68,7 @@ jobs:
         env:
           H2P_RENEW_URL: ${{ secrets.H2P_RENEW_URL }}
           H2P_COOKIE: ${{ secrets.H2P_COOKIE }}
+          H2P_ACCOUNTS: ${{ secrets.H2P_ACCOUNTS }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         working-directory: host2play-renew

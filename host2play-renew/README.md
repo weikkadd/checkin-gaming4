@@ -24,12 +24,36 @@ host2play-renew/
 
 进入仓库 → `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 
+支持 **单账号** 或 **多账号** 两种配置方式：
+
+#### 方式 A：单账号（简单）
+
 | Secret 名 | 必填 | 说明 |
 |---|---|---|
 | `H2P_RENEW_URL` | ✅ | 续期页面 URL，如 `https://host2play.gratis/server/renew?i=xxx``https://host2play.gratis/server/renew?i=xxx` |
 | `H2P_COOKIE` | ✅ | host2play 的 cookie 字符串 |
 | `TG_BOT_TOKEN` | ❌ | Telegram Bot Token（要通知才填） |
 | `TG_CHAT_ID` | ❌ | Telegram Chat ID |
+
+#### 方式 B：多账号（推荐）
+
+| Secret 名 | 必填 | 说明 |
+|---|---|---|
+| `H2P_ACCOUNTS` | ✅ | 多账号配置，每行一个：`名称|||续期URL|||Cookie` |
+| `TG_BOT_TOKEN` | ❌ | Telegram Bot Token |
+| `TG_CHAT_ID` | ❌ | Telegram Chat ID |
+
+**`H2P_ACCOUNTS` 格式示例**：
+
+```
+我的服务器1|||https://host2play.gratis/server/renew?i=aaa|||session=eyJpdi...; XSRF-TOKEN=eyJpdi...
+我的服务器2|||https://host2play.gratis/server/renew?i=bbb|||session=eyJpdi...; XSRF-TOKEN=eyJpdi...
+我的服务器3|||https://host2play.gratis/server/renew?i=ccc|||session=eyJpdi...; XSRF-TOKEN=eyJpdi...
+```
+
+> 字段用 `|||`（三个竖线）分隔，因为 Cookie 里常含 `;` 和 `=`，用逗号会冲突。
+>
+> 也可以省略名称，只写 `URL|||Cookie`，脚本会用 `server-1` / `server-2` 自动命名。
 
 ### 2. 获取 Cookie
 
@@ -66,20 +90,24 @@ host2play-renew/
 
 ## 📱 TG 通知示例
 
+**启动通知**：
 ```
-🎮 host2play
+🎮 host2play 续期
 🚀 续期启动
-⏰ 2026-07-07 16:00:00 (北京时间)
+⏰ 2026-07-16 16:00:00 (北京)
+👥 共 3 个账号
+```
 
-🎮 host2play
-📊 当前剩余时间
-⏳ 7h 57m
+**结果汇总**（多账号一次性发送）：
+```
+🎮 host2play 续期
+⏰ 2026-07-16 16:05:00 (北京)
 
-🎮 host2play
-✅ 续期成功
-⏰ 16:05:00 (北京)
-⏳ 剩余: 7h 57m → 31h 57m
-➕ 增加: 24h 0m
+📊 总账号: 3 | ✅ 2 | ❌ 1
+
+👤 我的服务器1: ✅ 7h 57m → 31h 57m (+24h 0m)
+👤 我的服务器2: ✅ 12h 0m → 36h 0m (+24h 0m)
+👤 我的服务器3: ❌ reCAPTCHA 未通过
 ```
 
 ## ⚠️ 注意事项

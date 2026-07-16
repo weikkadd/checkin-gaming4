@@ -408,15 +408,15 @@ def solve_recaptcha_audio(page) -> bool:
 # Cookie 注入
 # ==========================================================
 
-def inject_cookies(page) -> bool:
+def inject_cookies(page, cookie_str: str) -> bool:
     """注入 cookie 到当前域名"""
-    if not COOKIE_STR:
-        log.warning("⚠️ 未配置 H2P_COOKIE")
+    if not cookie_str:
+        log.warning("⚠️ Cookie 为空")
         return False
 
-    log.info(f"注入 cookie（{COOKIE_STR.count(';')+1} 项）...")
+    log.info(f"注入 cookie（{cookie_str.count(';')+1} 项）...")
     injected = 0
-    for item in COOKIE_STR.split(";"):
+    for item in cookie_str.split(";"):
         item = item.strip()
         if "=" not in item:
             continue
@@ -438,25 +438,18 @@ def inject_cookies(page) -> bool:
 # 主流程
 # ==========================================================
 
-def run():
+def run_one(label: str, renew_url: str, cookie_str: str):
+    """单账号续期流程"""
     from DrissionPage import ChromiumPage, ChromiumOptions
 
-    if not RENEW_URL:
-        log.error("❌ 未配置 H2P_RENEW_URL")
-        tg("❌ <b>续期失败</b>\n⚠️ 未配置 H2P_RENEW_URL")
-        return False
+    if not renew_url:
+        log.error(f"❌ [{label}] 未配置 renew_url")
+        return {"label": label, "ok": False, "msg": "未配置 renew_url"}
 
+    log.info("\n" + "=" * 60)
+    log.info(f"👤 账号: {label}")
+    log.info(f"续期 URL: {renew_url}")
     log.info("=" * 60)
-    log.info("host2play 续期启动")
-    log.info(f"续期 URL: {RENEW_URL}")
-    log.info(f"TG_BOT_TOKEN: {'✅ 已配置' if TG_TOKEN else '❌ 未配置'}")
-    log.info(f"TG_CHAT_ID: {'✅ 已配置' if TG_CHAT_ID else '❌ 未配置'}")
-    log.info("=" * 60)
-
-    # TG 启动通知
-    tg(f"🚀 <b>host2play 续期启动</b>\n"
-       f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
-       f"🌐 WARP: 已就绪", silent=True)
 
     # 配置浏览器
     co = ChromiumOptions()
@@ -465,9 +458,6 @@ def run():
     co.set_argument('--disable-gpu')
     co.set_argument('--lang=en-US')
     co.set_argument('--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-    # WARP 代理：fscarmen/warp-on-actions 已启用系统级 WARP（全局代理）
-    # Chrome 直接连网就走 WARP，不需要再设置 Chrome 代理
-    # 如果 WARP_PROXY 有值，用 Chrome --proxy-server（但 DrissionPage 不支持 socks5）
     if WARP_PROXY and not WARP_PROXY.startswith("socks"):
         co.set_argument(f'--proxy-server={WARP_PROXY}')
         log.info(f"🌐 使用代理: {WARP_PROXY}")
@@ -480,33 +470,29 @@ def run():
     try:
         # 1. 打开续期页面
         log.info("🌐 打开续期页面...")
-        page.get(RENEW_URL)
+        page.get(renew_url)
         time.sleep(5)
 
         # 2. 注入 cookie 并刷新
-        if COOKIE_STR:
-            inject_cookies(page)
+        if cookie_str:
+            inject_cookies(page, cookie_str)
             log.info("🔄 刷新让 cookie 生效...")
-            page.get(RENEW_URL)
+            page.get(renew_url)
             time.sleep(5)
 
-        screenshot(page, "dashboard")
+        screenshot(page, f"{label}-dashboard")
 
         # 3. 检测是否登录成功
         body_text = page.ele('tag:body').text if page.ele('tag:body') else ""
         if "Renew server" not in body_text and "Expires in" not in body_text:
-            log.warning("⚠️ 可能未登录或页面未加载")
-            screenshot(page, "not_logged_in")
-            tg(f"⚠️ <b>续期失败</b>\n⏰ {now_cn():%H:%M:%S} (北京)\n⚠️ 页面未加载或 cookie 失效")
-            return False
+            log.warning(f"⚠️ [{label}] 可能未登录或页面未加载")
+            screenshot(page, f"{label}-not_logged_in")
+            return {"label": label, "ok": False, "msg": "页面未加载或 cookie 失效"}
 
         # 4. 获取初始剩余时间
         old_sec = get_expires_seconds(page)
         if old_sec > 0:
             log.info(f"初始剩余: {old_sec}s ({old_sec//3600}h {(old_sec%3600)//60}m)")
-            tg(f"📊 <b>当前剩余时间</b>\n⏳ {old_sec//3600}h {(old_sec%3600)//60}m", silent=True)
-        else:
-            log.info("初始剩余: 未识别")
 
         # 5. 点击 Renew server 按钮
         log.info("🖱️ 点击 Renew server 按钮...")
@@ -520,33 +506,30 @@ def run():
                 time.sleep(3)
             else:
                 log.warning("⚠️ 未找到 Renew server 按钮")
-                screenshot(page, "no_renew_btn")
-                return False
+                screenshot(page, f"{label}-no_renew_btn")
+                return {"label": label, "ok": False, "msg": "未找到 Renew 按钮"}
         except Exception as e:
             log.warning(f"点击 Renew 按钮失败: {e}")
-            screenshot(page, "click_fail")
-            return False
+            screenshot(page, f"{label}-click_fail")
+            return {"label": label, "ok": False, "msg": f"点击失败: {e}"}
 
         # 6. 处理 reCAPTCHA
-        screenshot(page, "before_recaptcha")
+        screenshot(page, f"{label}-before_recaptcha")
         log.info("🤖 检测 reCAPTCHA...")
 
         recaptcha_passed = solve_recaptcha_audio(page)
 
         if not recaptcha_passed:
             log.error("❌ reCAPTCHA 未通过")
-            screenshot(page, "recaptcha_failed")
-            tg(f"❌ <b>续期失败</b>\n⏰ {now_cn():%H:%M:%S} (北京)\n⚠️ reCAPTCHA 未通过")
-            return False
+            screenshot(page, f"{label}-recaptcha_failed")
+            return {"label": label, "ok": False, "msg": "reCAPTCHA 未通过"}
 
         # 7. reCAPTCHA 通过后，点击 Renew（弹窗里的紫色按钮）
         log.info("🖱️ 点击弹窗里的 Renew 按钮...")
         time.sleep(2)
         try:
-            # 弹窗里的 Renew 按钮（紫色）
             renew_modal_btn = page.ele('css:button.purple', timeout=5)
             if not renew_modal_btn:
-                # 兜底：找所有按钮里文字是 Renew 的
                 btns = page.eles('css:button')
                 for btn in btns:
                     if 'renew' in (btn.text or '').lower():
@@ -562,49 +545,121 @@ def run():
             log.warning(f"点击弹窗 Renew 按钮失败: {e}")
 
         # 8. 检测续期是否成功
-        screenshot(page, "after_renew")
+        screenshot(page, f"{label}-after_renew")
         time.sleep(3)
 
-        # 刷新页面看新时间
-        page.get(RENEW_URL)
+        page.get(renew_url)
         time.sleep(5)
 
         new_sec = get_expires_seconds(page)
-        screenshot(page, "final")
+        screenshot(page, f"{label}-final")
 
         if new_sec > old_sec:
             delta = new_sec - old_sec
-            log.info(f"✅ 续期成功！{old_sec}s → {new_sec}s (Δ=+{delta}s)")
-            tg(f"✅ <b>续期成功</b>\n"
-               f"⏰ {now_cn():%H:%M:%S} (北京)\n"
-               f"⏳ 剩余: {old_sec//3600}h {(old_sec%3600)//60}m → {new_sec//3600}h {(new_sec%3600)//60}m\n"
-               f"➕ 增加: {delta//3600}h {(delta%3600)//60}m")
-            return True
+            log.info(f"✅ [{label}] 续期成功！{old_sec}s → {new_sec}s (+{delta}s)")
+            return {
+                "label": label,
+                "ok": True,
+                "old": f"{old_sec//3600}h {(old_sec%3600)//60}m",
+                "new": f"{new_sec//3600}h {(new_sec%3600)//60}m",
+                "delta": f"+{delta//3600}h {(delta%3600)//60}m",
+            }
         elif new_sec > 0:
-            log.warning(f"⚠️ 续期可能失败，时间未增加（{old_sec}s → {new_sec}s）")
-            tg(f"⚠️ <b>续期可能失败</b>\n"
-               f"⏰ {now_cn():%H:%M:%S} (北京)\n"
-               f"⏳ 当前剩余: {new_sec//3600}h {(new_sec%3600)//60}m\n"
-               f"⚠️ 时间未增加")
-            return False
+            log.warning(f"⚠️ [{label}] 时间未增加（{old_sec}s → {new_sec}s）")
+            return {
+                "label": label,
+                "ok": False,
+                "msg": f"时间未增加 ({old_sec//3600}h → {new_sec//3600}h)",
+            }
         else:
-            log.warning("⚠️ 无法识别新时间，但 reCAPTCHA 已通过")
-            tg(f"✅ <b>reCAPTCHA 已通过</b>\n"
-               f"⏰ {now_cn():%H:%M:%S} (北京)\n"
-               f"⚠️ 无法确认时间是否增加，请手动检查")
-            return True
+            log.warning(f"⚠️ [{label}] 无法识别新时间，但 reCAPTCHA 已通过")
+            return {"label": label, "ok": True, "msg": "reCAPTCHA 已通过, 无法确认时间"}
 
     except Exception as e:
-        log.exception(f"❌ 未捕获异常: {e}")
-        tg(f"❌ <b>续期异常</b>\n"
-           f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京时间)\n"
-           f"⚠️ 错误: {str(e)[:200]}")
-        return False
+        log.exception(f"❌ [{label}] 未捕获异常: {e}")
+        return {"label": label, "ok": False, "msg": f"异常: {str(e)[:200]}"}
     finally:
         try:
             page.quit()
         except:
             pass
+
+
+def collect_accounts():
+    """收集所有账号, 返回 [(label, renew_url, cookie_str), ...]
+    优先级:
+      1. H2P_ACCOUNTS (多账号, 每行: name|||renew_url|||cookie)
+      2. H2P_RENEW_URL + H2P_COOKIE (单账号兜底)
+    """
+    accounts = []
+    multi = os.getenv("H2P_ACCOUNTS", "").strip()
+    if multi:
+        for line in multi.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|||")
+            if len(parts) >= 3:
+                accounts.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+            elif len(parts) == 2:
+                # 只有 url||cookie, 用 url 作为 label
+                accounts.append((f"server-{len(accounts)+1}", parts[0].strip(), parts[1].strip()))
+            else:
+                log.warning(f"⚠️ 跳过格式错误的行: {line[:50]}...")
+
+    # 单账号兜底
+    if not accounts and RENEW_URL and COOKIE_STR:
+        accounts.append(("main", RENEW_URL, COOKIE_STR))
+
+    return accounts
+
+
+def build_summary(results):
+    ok_count = sum(1 for r in results if r.get("ok"))
+    fail_count = len(results) - ok_count
+    lines = ["🎮 <b>host2play 续期</b>", f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)", ""]
+    lines.append(f"📊 总账号: {len(results)} | ✅ {ok_count} | ❌ {fail_count}")
+    lines.append("")
+    for r in results:
+        if r.get("ok") and r.get("new"):
+            lines.append(f"👤 <b>{r['label']}</b>: ✅ {r.get('old','?')} → {r['new']} ({r.get('delta','')})")
+        elif r.get("ok"):
+            lines.append(f"👤 <b>{r['label']}</b>: ⚠️ {r.get('msg','未知')}")
+        else:
+            lines.append(f"👤 <b>{r['label']}</b>: ❌ {r.get('msg','失败')}")
+    return "\n".join(lines)
+
+
+def run():
+    accounts = collect_accounts()
+    if not accounts:
+        log.error("❌ 未配置任何账号 (H2P_ACCOUNTS 或 H2P_RENEW_URL+H2P_COOKIE)")
+        tg("❌ <b>host2play 续期失败</b>\n⚠️ 未配置任何账号")
+        return False
+
+    log.info("=" * 60)
+    log.info(f"host2play 续期启动 - 共 {len(accounts)} 个账号")
+    log.info(f"TG_BOT_TOKEN: {'✅ 已配置' if TG_TOKEN else '❌ 未配置'}")
+    log.info(f"TG_CHAT_ID: {'✅ 已配置' if TG_CHAT_ID else '❌ 未配置'}")
+    log.info("=" * 60)
+
+    tg(f"🚀 <b>host2play 续期启动</b>\n"
+       f"⏰ {now_cn():%Y-%m-%d %H:%M:%S} (北京)\n"
+       f"👥 共 {len(accounts)} 个账号", silent=True)
+
+    results = []
+    for label, url, ck in accounts:
+        try:
+            r = run_one(label, url, ck)
+        except Exception as e:
+            r = {"label": label, "ok": False, "msg": f"异常: {e}"}
+        results.append(r)
+
+    summary = build_summary(results)
+    log.info("\n" + summary)
+    tg(summary)
+
+    return all(r.get("ok") for r in results)
 
 
 if __name__ == "__main__":
@@ -613,5 +668,5 @@ if __name__ == "__main__":
         log.info("🏁 续期完成")
         sys.exit(0)
     else:
-        log.error("🏁 续期失败")
+        log.error("🏁 续期完成 (部分或全部失败)")
         sys.exit(1)
