@@ -269,6 +269,7 @@ def dump_buttons(sb):
             log(f"🔎 [调试] 含 90 的按钮共 {len(info)} 个:")
             for b in info:
                 log(f"    <{b.get('tag')}> wc='{b.get('wc')}' disabled={b.get('disabled')} text='{b.get('text')}'")
+                log(f"      html: {b.get('html')}")
         else:
             log("🔎 [调试] 未找到任何含 90 的按钮")
         return info or []
@@ -472,18 +473,51 @@ def renew_account(sb, server_name, renew_url):
     listen_js = """
         (function() {
             window.__reqs = [];
+            // 序列化各种类型的 body 为可读字符串 (Filament/Livewire 可能用 FormData/Blob)
+            var serializeBody = function(body) {
+                if (body == null) return '';
+                if (typeof body === 'string') return body.substring(0, 150);
+                if (body instanceof FormData) {
+                    var parts = [];
+                    body.forEach(function(v, k){ parts.push(k + '=' + (typeof v === 'string' ? v.substring(0,40) : v.name || '?')); });
+                    return 'FD:' + parts.join('&');
+                }
+                if (body instanceof URLSearchParams) return 'USP:' + body.toString().substring(0, 150);
+                if (body instanceof Blob) return 'Blob(' + body.type + ',' + body.size + ')';
+                if (body instanceof ArrayBuffer) return 'AB(' + body.byteLength + ')';
+                return String(body).substring(0, 60);
+            };
             var record = function(method, url, bodyHint) {
                 if (!url) return;
                 if (/\\.(js|css|png|jpg|jpeg|gif|svg|woff|ico)(\\?|$)/i.test(url)) return;
                 if (/ipify|cloudflare|turnstile|recaptcha/i.test(url)) return;
-                window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || '', t: Date.now()});
+                var entry = {m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: (bodyHint||'').substring(0,150), t: Date.now(), r: ''};
+                window.__reqs.push(entry);
+                return entry;
             };
             if (!window.__fetchHooked) {
                 var origFetch = window.fetch;
                 window.fetch = function() {
                     var url = arguments[0], opt = arguments[1] || {};
-                    try { record(opt.method || 'GET', (typeof url === 'string') ? url : (url && url.url), ''); } catch(e) {}
-                    return origFetch.apply(this, arguments);
+                    var entry = null;
+                    try {
+                        var u = (typeof url === 'string') ? url : (url && url.url) || '';
+                        entry = record(opt.method || 'GET', u, serializeBody(opt.body));
+                    } catch(e) {}
+                    var p = origFetch.apply(this, arguments);
+                    if (entry) {
+                        p.then(function(resp){
+                            try {
+                                var ct = resp.headers.get('content-type') || '';
+                                if (ct.indexOf('json') !== -1 || ct.indexOf('text') !== -1) {
+                                    resp.clone().text().then(function(txt){
+                                        entry.r = txt.substring(0, 200);
+                                    }).catch(function(){});
+                                }
+                            } catch(e) {}
+                        }).catch(function(){});
+                    }
+                    return p;
                 };
                 var origOpen = XMLHttpRequest.prototype.open;
                 var origSend = XMLHttpRequest.prototype.send;
@@ -492,11 +526,19 @@ def renew_account(sb, server_name, renew_url):
                     return origOpen.apply(this, arguments);
                 };
                 XMLHttpRequest.prototype.send = function(body) {
-                    try {
-                        var hint = '';
-                        if (body && typeof body === 'string' && body.length < 200) hint = body.substring(0, 80);
-                        record(this.__m, this.__u, hint);
-                    } catch(e) {}
+                    var entry = null;
+                    try { entry = record(this.__m, this.__u, serializeBody(body)); } catch(e) {}
+                    var xhr = this;
+                    if (entry) {
+                        xhr.addEventListener('load', function(){
+                            try {
+                                var ct = xhr.getResponseHeader('content-type') || '';
+                                if (ct.indexOf('json') !== -1 || ct.indexOf('text') !== -1) {
+                                    entry.r = (xhr.responseText || '').substring(0, 200);
+                                }
+                            } catch(e) {}
+                        });
+                    }
                     return origSend.apply(this, arguments);
                 };
                 window.__fetchHooked = true;
@@ -530,6 +572,9 @@ def renew_account(sb, server_name, renew_url):
     try:
         reqs = sb.execute_script("(function() { return window.__reqs || []; })();") or []
         click_t0 = sb.execute_script("return window.__clickT0 || 0;") or 0
+        # 给响应留点时间到达 (response 是异步填充的)
+        time.sleep(1)
+        reqs = sb.execute_script("(function() { return window.__reqs || []; })();") or []
         # 优先找 POST 且端点可疑的 (续期写操作)
         renew_re = re.compile(r'livewire|api|update|renew|time|add', re.I)
         renew_candidates = [r for r in reqs
@@ -537,12 +582,27 @@ def renew_account(sb, server_name, renew_url):
                             and renew_re.search((r.get('u','') + ' ' + r.get('b','')))]
         if reqs:
             log(f"🌐 点击后共 {len(reqs)} 个请求, 其中 POST {len([r for r in reqs if r.get('m')=='POST'])} 个")
-            # 调试: 打印所有 POST + 相对点击时刻的偏移 (区分 +90 请求 vs 轮询)
+            # 只打印点击后 1.5 秒内的 POST (这些才是按钮触发的, 排除 2 秒间隔的轮询)
+            click_triggered = []
             for r in reqs:
                 if r.get('m') == 'POST':
                     delta = r.get('t', 0) - click_t0 if click_t0 else 0
-                    log(f"    📤 POST {r.get('u')}  +{delta}ms  body={r.get('b')!r}")
+                    if delta < 1500:  # 点击后 1.5 秒内
+                        click_triggered.append(r)
+            if click_triggered:
+                log(f"🎯 点击触发 (1.5s 内) 的请求 {len(click_triggered)} 个:")
+                for r in click_triggered:
+                    delta = r.get('t', 0) - click_t0 if click_t0 else 0
+                    log(f"    📤 POST {r.get('u')}  +{delta}ms")
+                    log(f"       body: {r.get('b')!r}")
+                    log(f"       resp: {r.get('r')!r}")
+            else:
+                log("⚠️ 点击后 1.5s 内无 POST — 点击可能没触发任何请求")
         if renew_candidates:
+            # 检查响应里有没有续期成功的标志
+            renew_with_resp = [r for r in renew_candidates if r.get('r')]
+            if renew_with_resp:
+                log(f"📋 续期请求响应样本: {renew_with_resp[0].get('r')!r}")
             log(f"✅ 疑似续期请求: {renew_candidates[0].get('m')} {renew_candidates[0].get('u')}")
         else:
             log(f"⚠️ 未检测到续期类请求, 点击可能未生效 (检查上面 POST 列表确认真实端点)")
