@@ -8,6 +8,7 @@ gaming4free 自动续期脚本 v4
 """
 
 import os, time, random, urllib.request, urllib.parse, re
+from selenium.webdriver.common.action_chains import ActionChains
 from seleniumbase import SB
 
 # ================== 环境变量 ==================
@@ -323,32 +324,54 @@ def click_plus_90(sb):
         except Exception as e:
             log(f"⚠️ [策略1] wire:click 点击异常: {e}")
 
-    # 2. ★ 主策略: 真实 WebDriver 点击 (isTrusted=true)
-    #    按钮(无 wire:click)大概率绑的是 Alpine @click / addEventListener,
-    #    合成事件(el.click() in JS) isTrusted=false 经常被忽略, 必须走真实鼠标事件。
-    #    先用 JS 定位元素并滚动到位, 再用 SeleniumBase 真实点击。
+    # 2. ★ 主策略: JS 定位坐标 + ActionChains 真实点击 (isTrusted=true)
+    #    XPath is_element_visible 在 UC mode 下不可靠, 改用 JS 定位按钮获取坐标,
+    #    再用 ActionChains 在该坐标执行真实鼠标点击 (isTrusted=true, 能触发 Alpine @click)
     if not clicked:
-        # 定位用的 XPath (排除 Wait 冷却态)
-        click_xpaths = [
-            "//button[contains(., '90 min') and not(contains(., 'Wait'))]",
-            "//button[contains(., '+ 90') and not(contains(., 'Wait'))]",
-            "//*[contains(text(), '90')]/ancestor::button[not(contains(., 'Wait'))]",
-        ]
-        for xpath in click_xpaths:
-            try:
-                if sb.is_element_visible(xpath):
-                    sb.scroll_to(xpath)
-                    time.sleep(0.3)
-                    screenshot(sb, "before-click")
-                    # 真实点击 — isTrusted=true, 能触发 Alpine/addEventListener
-                    sb.click(xpath)
-                    log(f"🎯 [策略2] 真实 WebDriver 点击: {xpath}")
-                    clicked = True
-                    break
-            except Exception as e:
-                log(f"⚠️ [策略2] 点击 {xpath} 异常: {e}")
-                continue
-        # WebDriver 点击失败的兜底: 才用 JS 合成 click (isTrusted=false)
+        locate_js = """
+        (function() {
+            var all = document.querySelectorAll('button, [role="button"], a');
+            for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var t = (el.innerText || el.textContent || "").replace(/\\s+/g, ' ').trim();
+                if (t.length <= 30 && /90/.test(t) && !el.disabled
+                    && el.getAttribute('aria-disabled') !== 'true') {
+                    el.scrollIntoView({block: 'center', behavior: 'instant'});
+                    try { el.focus(); } catch(e) {}
+                    var rect = el.getBoundingClientRect();
+                    return {
+                        found: true,
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                        w: Math.round(rect.width),
+                        h: Math.round(rect.height),
+                        text: t,
+                        tag: el.tagName.toLowerCase()
+                    };
+                }
+            }
+            return {found: false};
+        })();
+        """
+        try:
+            info = sb.execute_script(locate_js)
+            if info and info.get('found'):
+                cx, cy = info['x'], info['y']
+                log(f"🎯 [策略2] JS 定位: <{info['tag']}> '{info['text']}' at ({cx},{cy}) {info['w']}x{info['h']}")
+                # ActionChains: 真实鼠标移动+点击 → isTrusted=true
+                actions = ActionChains(sb.driver)
+                actions.move_by_offset(cx, cy)
+                actions.click()
+                actions.perform()
+                log(f"🎯 [策略2] ActionChains 真实点击完成 at ({cx},{cy})")
+                screenshot(sb, "after-click")
+                clicked = True
+            else:
+                log("⚠️ [策略2] JS 定位未找到按钮, 降级合成 click")
+        except Exception as e:
+            log(f"⚠️ [策略2] ActionChains 异常: {e}")
+
+        # ActionChains 失败的兜底: JS 合成 click (isTrusted=false)
         if not clicked:
             try:
                 result = sb.execute_script("""
@@ -476,7 +499,7 @@ def renew_account(sb, server_name, renew_url):
                 if (!url) return;
                 if (/\\.(js|css|png|jpg|jpeg|gif|svg|woff|ico)(\\?|$)/i.test(url)) return;
                 if (/ipify|cloudflare|turnstile|recaptcha/i.test(url)) return;
-                window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || ''});
+                window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || '', t: Date.now()});
             };
             if (!window.__fetchHooked) {
                 var origFetch = window.fetch;
@@ -515,14 +538,21 @@ def renew_account(sb, server_name, renew_url):
     if not listen_ok:
         log("⚠️ 监听注入彻底失败, 本次将无法观测请求 (点击可能仍生效)")
 
+    # 点击前清零请求列表 + 记录基准时间 (区分 +90 请求 vs Livewire 轮询)
+    try:
+        sb.execute_script("window.__reqs = []; window.__clickT0 = Date.now();")
+    except:
+        pass
+
     if not click_plus_90(sb):
         screenshot(sb, f"fail_{server_name}")
         return time_text, time_secs, False
 
     # 检查点击后是否真的发出请求 (修复 #2: 看 POST / 含 livewire|api|update 的)
-    time.sleep(3)
+    time.sleep(5)
     try:
         reqs = sb.execute_script("(function() { return window.__reqs || []; })();") or []
+        click_t0 = sb.execute_script("return window.__clickT0 || 0;") or 0
         # 优先找 POST 且端点可疑的 (续期写操作)
         renew_re = re.compile(r'livewire|api|update|renew|time|add', re.I)
         renew_candidates = [r for r in reqs
@@ -530,10 +560,11 @@ def renew_account(sb, server_name, renew_url):
                             and renew_re.search((r.get('u','') + ' ' + r.get('b','')))]
         if reqs:
             log(f"🌐 点击后共 {len(reqs)} 个请求, 其中 POST {len([r for r in reqs if r.get('m')=='POST'])} 个")
-            # 调试: 打印所有 POST 帮助定位真实端点
+            # 调试: 打印所有 POST + 相对点击时刻的偏移 (区分 +90 请求 vs 轮询)
             for r in reqs:
                 if r.get('m') == 'POST':
-                    log(f"    📤 POST {r.get('u')}  body={r.get('b')!r}")
+                    delta = r.get('t', 0) - click_t0 if click_t0 else 0
+                    log(f"    📤 POST {r.get('u')}  +{delta}ms  body={r.get('b')!r}")
         if renew_candidates:
             log(f"✅ 疑似续期请求: {renew_candidates[0].get('m')} {renew_candidates[0].get('u')}")
         else:
@@ -583,12 +614,14 @@ def renew_account(sb, server_name, renew_url):
     if not new_text:
         log(f"⚠️ 重载后读不到剩余时间文本 (旧={time_text}), 本轮判失败, 不误报")
         screenshot(sb, f"no-time-{server_name}")
+        log(f"📊 轮次结果: ❌失败 | 时间 {time_text}→读不到 | 计时器就绪={timer_ready}")
         return time_text, time_secs, False
 
     time_diff = new_secs - time_secs
 
     if time_diff > 60:
         log(f"✅ 续期成功! {time_text} → {new_text} (+{time_diff//60}m {time_diff%60}s)")
+        log(f"📊 轮次结果: ✅成功 | 时间 {time_text}→{new_text} (+{time_diff//60}m)")
         return new_text, new_secs, True
     elif time_diff >= -60:
         log(f"❌ 未生效! {time_text} → {new_text} (差 {time_diff}s)")
@@ -602,10 +635,12 @@ def renew_account(sb, server_name, renew_url):
             if error_text:
                 log(f"⚠️ 页面错误提示: {error_text}")
         except: pass
+        log(f"📊 轮次结果: ❌未生效 | 时间 {time_text}→{new_text} (差{time_diff}s)")
         return time_text, time_secs, False
     else:
         log(f"⚠️ 时间异常减少 ({time_text} → {new_text}, 差 {time_diff}s)")
         screenshot(sb, f"time-drop-{server_name}")
+        log(f"📊 轮次结果: ❌时间下降 | 时间 {time_text}→{new_text} (差{time_diff}s)")
         return time_text, time_secs, False
 
 def run_script():
