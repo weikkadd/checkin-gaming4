@@ -1,0 +1,34 @@
+name: AclClouds-Kaka-Renew
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          pip install playwright
+          playwright install chromium
+
+      - name: Renew
+        env:
+          KAKA_GOOGLE_EMAIL: ${{ secrets.KAKA_GOOGLE_EMAIL }}
+          KAKA_GOOGLE_PASSWORD: ${{ secrets.KAKA_GOOGLE_PASSWORD }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python aclclouds-kaka-renew/renew.py
