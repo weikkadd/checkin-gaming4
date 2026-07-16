@@ -323,32 +323,56 @@ def click_plus_90(sb):
         except Exception as e:
             log(f"⚠️ [策略1] wire:click 点击异常: {e}")
 
-    # 2. 备用: 含 90 的可点击元素, 用原生 element.click() (isTrusted=true)
+    # 2. ★ 主策略: 真实 WebDriver 点击 (isTrusted=true)
+    #    按钮(无 wire:click)大概率绑的是 Alpine @click / addEventListener,
+    #    合成事件(el.click() in JS) isTrusted=false 经常被忽略, 必须走真实鼠标事件。
+    #    先用 JS 定位元素并滚动到位, 再用 SeleniumBase 真实点击。
     if not clicked:
-        try:
-            result = sb.execute_script("""
-            (function() {
-                var all = document.querySelectorAll('button, [role="button"], a');
-                for (var i = 0; i < all.length; i++) {
-                    var el = all[i];
-                    var t = (el.innerText || el.textContent || "").replace(/\\s+/g, ' ').trim();
-                    // 宽松匹配: 文字里含 90, 且文本短, 且未禁用
-                    if (t.length <= 30 && /90/.test(t) && !el.disabled
-                        && el.getAttribute('aria-disabled') !== 'true') {
-                        el.scrollIntoView({block: 'center', behavior: 'instant'});
-                        try { el.focus(); } catch(e) {}
-                        try { el.click(); } catch(e) {}
-                        return 'text-clicked: ' + t + ' on <' + el.tagName.toLowerCase() + '>';
+        # 定位用的 XPath (排除 Wait 冷却态)
+        click_xpaths = [
+            "//button[contains(., '90 min') and not(contains(., 'Wait'))]",
+            "//button[contains(., '+ 90') and not(contains(., 'Wait'))]",
+            "//*[contains(text(), '90')]/ancestor::button[not(contains(., 'Wait'))]",
+        ]
+        for xpath in click_xpaths:
+            try:
+                if sb.is_element_visible(xpath):
+                    sb.scroll_to(xpath)
+                    time.sleep(0.3)
+                    screenshot(sb, "before-click")
+                    # 真实点击 — isTrusted=true, 能触发 Alpine/addEventListener
+                    sb.click(xpath)
+                    log(f"🎯 [策略2] 真实 WebDriver 点击: {xpath}")
+                    clicked = True
+                    break
+            except Exception as e:
+                log(f"⚠️ [策略2] 点击 {xpath} 异常: {e}")
+                continue
+        # WebDriver 点击失败的兜底: 才用 JS 合成 click (isTrusted=false)
+        if not clicked:
+            try:
+                result = sb.execute_script("""
+                (function() {
+                    var all = document.querySelectorAll('button, [role="button"], a');
+                    for (var i = 0; i < all.length; i++) {
+                        var el = all[i];
+                        var t = (el.innerText || el.textContent || "").replace(/\\s+/g, ' ').trim();
+                        if (t.length <= 30 && /90/.test(t) && !el.disabled
+                            && el.getAttribute('aria-disabled') !== 'true') {
+                            el.scrollIntoView({block: 'center', behavior: 'instant'});
+                            try { el.focus(); } catch(e) {}
+                            try { el.click(); } catch(e) {}
+                            return 'js-clicked: ' + t + ' on <' + el.tagName.toLowerCase() + '>';
+                        }
                     }
-                }
-                return false;
-            })();
-            """)
-            if result:
-                log(f"🚀 [策略2] 含90元素原生 click(): {result}")
-                clicked = True
-        except Exception as e:
-            log(f"⚠️ [策略2] 异常: {e}")
+                    return false;
+                })();
+                """)
+                if result:
+                    log(f"🚀 [策略2-兜底] JS 合成 click(): {result}")
+                    clicked = True
+            except Exception as e:
+                log(f"⚠️ [策略2-兜底] 异常: {e}")
 
     # 3. 检查广告按钮 (Watch Ad 等) — 广告流程可能在前置
     if not clicked:
@@ -381,27 +405,7 @@ def click_plus_90(sb):
             except:
                 continue
 
-    # 4. 最后兜底: SeleniumBase WebDriver 真实点击 (isTrusted=true)
-    #    注意: 不用 contains(@wire:click,...) — XPath 1.0 会把 'wire:' 当命名空间前缀报错
-    #    wire:click 场景已由策略1的 CSS 选择器覆盖
-    if not clicked:
-        xpaths = [
-            "//button[contains(., '90 min') and not(contains(., 'Wait'))]",
-            "//button[contains(., '+ 90') and not(contains(., 'Wait'))]",
-            "//*[contains(text(), '90')]/ancestor::button[not(contains(., 'Wait'))]",
-        ]
-        for xpath in xpaths:
-            try:
-                if sb.is_element_visible(xpath):
-                    sb.scroll_to(xpath)
-                    time.sleep(0.5)
-                    screenshot(sb, "before-click")
-                    sb.click(xpath)
-                    log(f"✅ [策略4] WebDriver 兜底点击: {xpath}")
-                    clicked = True
-                    break
-            except:
-                continue
+    # (策略4 已合并入策略2: 真实 WebDriver 点击现在为主策略)
 
     if not clicked:
         log("❌ 所有点击策略失败")
@@ -463,19 +467,18 @@ def renew_account(sb, server_name, renew_url):
 
     log("🔍 查找 +90 min 按钮...")
     # 监听网络请求: 记录点击后所有 XHR/fetch (修复 #2)
-    # 不再只认 URL 含 'livewire' 的请求 — 站点可能用 /api/ 或其他端点
-    try:
-        sb.driver.execute_script("""
-            (function() {
-                window.__reqs = [];
-                var isPost = function(method){ return (method||'').toUpperCase() === 'POST'; };
-                var record = function(method, url, bodyHint) {
-                    if (!url) return;
-                    // 只记录 POST (续期是写操作) + 任何可疑端点, 过滤静态资源/轮询
-                    if (/\\.(js|css|png|jpg|jpeg|gif|svg|woff|ico)(\\?|$)/i.test(url)) return;
-                    if (/ipify|cloudflare|turnstile|recaptcha/i.test(url)) return;
-                    window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || ''});
-                };
+    # 注意: 必须用 sb.execute_script (非 sb.driver.execute_script) —
+    # UC mode reconnect 后 sb.driver 直连会 Connection refused, sb 封装会自动重连重试
+    listen_js = """
+        (function() {
+            window.__reqs = [];
+            var record = function(method, url, bodyHint) {
+                if (!url) return;
+                if (/\\.(js|css|png|jpg|jpeg|gif|svg|woff|ico)(\\?|$)/i.test(url)) return;
+                if (/ipify|cloudflare|turnstile|recaptcha/i.test(url)) return;
+                window.__reqs.push({m: (method||'').toUpperCase(), u: String(url).substring(0, 120), b: bodyHint || ''});
+            };
+            if (!window.__fetchHooked) {
                 var origFetch = window.fetch;
                 window.fetch = function() {
                     var url = arguments[0], opt = arguments[1] || {};
@@ -496,10 +499,21 @@ def renew_account(sb, server_name, renew_url):
                     } catch(e) {}
                     return origSend.apply(this, arguments);
                 };
-            })();
-        """)
-    except Exception as e:
-        log(f"⚠️ 网络监听设置失败 (可忽略): {e}")
+                window.__fetchHooked = true;
+            }
+        })();
+    """
+    listen_ok = False
+    for attempt in range(3):
+        try:
+            sb.execute_script(listen_js)
+            listen_ok = True
+            break
+        except Exception as e:
+            log(f"⚠️ 监听注入第 {attempt+1}/3 次失败: {e}")
+            time.sleep(2)
+    if not listen_ok:
+        log("⚠️ 监听注入彻底失败, 本次将无法观测请求 (点击可能仍生效)")
 
     if not click_plus_90(sb):
         screenshot(sb, f"fail_{server_name}")
