@@ -132,33 +132,98 @@ def close_modals(sb):
     except: pass
 
 def click_plus_90(sb):
-    """增强版点击逻辑"""
+    """增强版点击逻辑 — 修复 Alpine.js/Livewire 兼容性"""
     close_modals(sb)
-    
-    # 策略 1: 使用更真实的 JS 模拟点击事件 (IIFE 包裹)
-    js_click_script = """
+
+    # 0. 先检查按钮状态: 是否处于 cooldown
+    cooldown_check = """
+    (function() {
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+            var text = btns[i].innerText || '';
+            if (text.indexOf('90') !== -1) {
+                var disabled = btns[i].disabled || btns[i].getAttribute('aria-disabled') === 'true';
+                var classes = btns[i].className || '';
+                var isCooldown = classes.indexOf('disabled') !== -1 || classes.indexOf('cursor-not-allowed') !== -1 || disabled;
+                // 检查是否有倒计时文字 (如 "Wait Xs")
+                var waitMatch = text.match(/Wait\\s*(\\d+)/i) || text.match(/(\\d+)\\s*s/);
+                if (waitMatch) {
+                    return {cooldown: true, remaining: parseInt(waitMatch[1]), text: text.trim()};
+                }
+                if (isCooldown) {
+                    return {cooldown: true, disabled: true, text: text.trim()};
+                }
+                return {cooldown: false, text: text.trim()};
+            }
+        }
+        return null;
+    })();
+    """
+    try:
+        btn_status = sb.execute_script(cooldown_check)
+        if btn_status and btn_status.get('cooldown'):
+            remaining = btn_status.get('remaining', '?')
+            log(f"⏳ 按钮处于 cooldown: {btn_status.get('text','')} (剩余 {remaining}s)")
+            return False
+    except:
+        pass
+
+    # 1. 先排查是否有广告按钮，有的话先点广告
+    log("🔍 先检查广告按钮...")
+    ad_keywords = ['Watch Ad', 'Play Ad', 'Watch', 'Claim', 'Earn', 'Get Free', 'Collect']
+    for kw in ad_keywords:
+        try:
+            ad_script = "(function() { var btns = document.querySelectorAll('button, a, [role=\"button\"]'); for (var i = 0; i < btns.length; i++) { var t = (btns[i].innerText || '').trim(); if (t.toLowerCase().indexOf('" + kw.lower() + "') !== -1 && t.length < 30) { btns[i].scrollIntoView({block: 'center'}); btns[i].click(); return 'ad:' + t; } } return false; })();"
+            ad_result = sb.execute_script(ad_script)
+            if ad_result:
+                log(f"🎬 检测到广告按钮: {ad_result}")
+                time.sleep(15)  # 等待广告播放
+                # 广告后检查 +90 按钮
+                result2 = sb.execute_script("(function() { var btns = document.querySelectorAll('button'); for (var i = 0; i < btns.length; i++) { var t = btns[i].innerText||''; if (t.indexOf('90') !== -1) { btns[i].scrollIntoView({block:'center'}); btns[i].click(); return 'clicked:'+t.trim(); } } return false; })();")
+                if result2:
+                    log(f"🚀 广告后点击 +90: {result2}")
+                    time.sleep(3)
+                    return True
+        except:
+            continue
+
+    # 2. SeleniumBase 原生点击 (最可靠)
+    xpaths = [
+        "//button[contains(text(), '+ 90 min')]",
+        "//button[contains(., '+90 min')]",
+        "//*[contains(text(), '+ 90 min')]/ancestor::button",
+        "//*[contains(text(), '+90 min')]/ancestor::button",
+        "//button[contains(., '90 min')]",
+        "//button[contains(., '90') and not(contains(., '+0'))]",
+    ]
+    for xpath in xpaths:
+        try:
+            if sb.is_element_visible(xpath):
+                sb.scroll_to(xpath)
+                time.sleep(0.5)
+                sb.click(xpath)
+                log(f"✅ SeleniumBase 点击: {xpath}")
+                time.sleep(3)
+                return True
+        except:
+            continue
+
+    # 3. JS 原生 click() (适配 Alpine.js)
+    js_real_click = """
     (function() {
         var targets = ["+ 90 min", "+90 min", "90 min"];
-        var elements = document.querySelectorAll('button, a, span, strong, div');
-        function simulateClick(el) {
-            var evt1 = new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window});
-            var evt2 = new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window});
-            var evt3 = new MouseEvent("click", {bubbles: true, cancelable: true, view: window});
-            el.dispatchEvent(evt1);
-            el.dispatchEvent(evt2);
-            el.dispatchEvent(evt3);
-        }
-        for (var i = 0; i < elements.length; i++) {
-            var el = elements[i];
-            var text = (el.innerText || "").trim();
+        var all = document.querySelectorAll('button, [role="button"]');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            var text = (el.innerText || el.textContent || "").trim();
             for (var j = 0; j < targets.length; j++) {
-                if (text.indexOf(targets[j]) !== -1 && text.length < 20) {
-                    el.scrollIntoView({block: 'center', behavior: 'smooth'});
-                    simulateClick(el);
-                    if (el.tagName === 'SPAN' || el.tagName === 'STRONG') {
-                        if (el.parentElement) simulateClick(el.parentElement);
+                if (text.indexOf(targets[j]) !== -1 && !el.disabled) {
+                    el.scrollIntoView({block: 'center', behavior: 'instant'});
+                    el.focus({preventScroll: false});
+                    if (typeof el.click === 'function') {
+                        el.click();
+                        return 'clicked:' + text;
                     }
-                    return true;
                 }
             }
         }
@@ -166,30 +231,16 @@ def click_plus_90(sb):
     })();
     """
     try:
-        success = sb.execute_script(js_click_script)
-        if success:
-            log("🚀 已通过 JS 脚本强制点击 +90 min 按钮")
-            time.sleep(2)
+        result = sb.execute_script(js_real_click)
+        if result:
+            log(f"🚀 JS 原生点击: {result}")
+            time.sleep(3)
             return True
     except Exception as e:
         log(f"⚠️ JS 点击异常: {e}")
 
-    # 策略 2: XPath 定位
-    xpaths = [
-        "//*[contains(text(), '+ 90 min')]",
-        "//*[contains(text(), '+90 min')]",
-        "//button[contains(., '90')]",
-        "//span[contains(., '90')]/.."
-    ]
-    for xpath in xpaths:
-        try:
-            if sb.is_element_visible(xpath):
-                sb.click(xpath)
-                log(f"✅ 已通过 XPath 成功点击: {xpath}")
-                return True
-        except: continue
-
     log("❌ 所有点击策略均告失败")
+    sb.save_screenshot(f"click_fail.png")
     return False
 
 def handle_confirm(sb):
@@ -272,18 +323,22 @@ def renew_account(sb, server_name, renew_url):
     new_text, new_secs = get_remaining_time(sb)
     
     # 成功判断: 续期 +90 分钟 = 5400 秒
-    # 但重新加载页面有延迟 (10-30 秒), 倒计时也在走
-    # 所以只要 new_secs > time_secs (时间增加了) 就算成功
-    # 或者 new_secs 比 time_secs 少不到 60 秒 (页面加载延迟导致的时间差) 也算成功
+    # 页面重新加载通常有 10-30 秒延迟, 所以时间差必须在合理范围内才算成功
+    # 如果时间减少了(只是自然倒计时), 说明按钮点击没生效
     time_diff = new_secs - time_secs
-    if time_diff > -60:
-        if time_diff > 0:
-            log(f"✅ 续期成功! {time_text} → {new_text} (增加 {time_diff//60} 分钟)")
-        else:
-            log(f"✅ 续期成功! {time_text} → {new_text} (时间差 {time_diff}秒, 在容错范围内)")
+    
+    # 严格判断: 时间必须明显增加(至少+60秒)才算真正的续期成功
+    # 注意: 按钮本身可能有 cooldown(通常5分钟=300秒), cooldown期间点了也不会加时间
+    if time_diff > 60:
+        log(f"✅ 续期成功! {time_text} → {new_text} (增加 {time_diff//60} 分 {time_diff % 60} 秒)")
         return new_text, new_secs, True
+    elif time_diff >= -60:
+        log(f"❌ 续期未生效! 时间从 {time_text} → {new_text} (差 {time_diff}秒, 仅为页面刷新延迟)")
+        log(f"💡 可能原因: ①按钮处于 cooldown ②需要先看广告 ③页面逻辑变更")
+        sb.save_screenshot(f"no_effect_{server_name}_round.png")
+        return time_text, time_secs, False
     else:
-        log(f"⚠️ 时间未变化 ({time_text} → {new_text}, 差 {time_diff}秒), 可能未触发或冷却中")
+        log(f"⚠️ 时间异常减少 ({time_text} → {new_text}, 差 {time_diff}秒)")
         return time_text, time_secs, False
 
 def run_script():
