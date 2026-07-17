@@ -459,20 +459,27 @@ def main():
 
                     log("🖱️ 正在点击 +90 分钟续期按钮...")
                     try:
-                        WebDriverWait(sb.driver, 10).until(
-                            EC.element_to_be_clickable((By.XPATH, "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')] "))
-                        )
-                        # 使用标准点击方式 (uc=False 时没有 uc_click)
+                        # 等待按钮出现并可点击
                         btn_xpath = "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')]"
-                        elem = sb.find_element(btn_xpath, timeout=10)
-                        # 先执行 JS 模拟完整鼠标事件，绕过 livewire 检测
-                        sb.execute_script("""arguments[0].dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window}));""", elem)
-                        time.sleep(0.1)
-                        sb.execute_script("""arguments[0].dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, view: window}));""", elem)
-                        time.sleep(0.1)
-                        sb.execute_script("""arguments[0].dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));""", elem)
-                        log("🎯 首次点击续期按钮已完成 (JS模拟)")
-                        log("🎯 首次点击续期按钮已完成")
+
+                        # 方法1: 先用 SeleniumBase 的标准 click
+                        try:
+                            sb.click(btn_xpath, timeout=10)
+                            log("🎯 首次点击续期按钮完成 (标准click)")
+                        except Exception:
+                            # 方法2: 如果标准click失败，用JS直接触发click
+                            log("⚠️ 标准click失败，尝试JS点击...")
+                            sb.execute_script(f"""
+                                var buttons = document.querySelectorAll('button');
+                                for (var i = 0; i < buttons.length; i++) {{
+                                    if (buttons[i].innerText.includes('90')) {{
+                                        buttons[i].click();
+                                        break;
+                                    }}
+                                }}
+                            """)
+                            log("🎯 首次点击续期按钮完成 (JS点击)")
+                        time.sleep(2)  # 给 Livewire 响应时间
                     except Exception as e:
                         log(f"⚠️ 首次点击失败: {e}")
                         screenshot(sb, "点击失败截图")
