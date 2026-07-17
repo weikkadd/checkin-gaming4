@@ -501,63 +501,69 @@ def main():
                         except Exception as e:
                             log(f"⚠️ sb.click() 失败: {e}")
 
-                    # 策略2: JS 查找并点击含 "90" 的按钮（最可靠的方式）
+                    # 策略2: 用 Livewire 正确的事件机制触发续期
                     if not click_done:
                         try:
-                            log("📍 尝试 JS 查找+点击...")
+                            log("📍 尝试 Livewire 事件触发...")
                             js_result = sb.execute_script("""
                                 var btns = document.querySelectorAll('button');
                                 for (var i = 0; i < btns.length; i++) {
                                     var text = (btns[i].textContent || '').trim();
                                     if (text.indexOf('90') !== -1) {
-                                        // 清除所有阻止交互的样式
+                                        // 清除阻止样式
                                         btns[i].style.cssText += '; pointer-events:auto !important; visibility:visible !important; opacity:1 !important;';
                                         btns[i].removeAttribute('disabled');
-                                        btns[i].className = btns[i].className.replace(/\b(opacity-50|cursor-not-allowed|pointer-events-none)\b/g, '');
 
-                                        // 获取 Alpine.js / Livewire 绑定的数据
-                                        var root = allBtns[i];
-                                        var alpineData = null;
-                                        while (root && !alpineData) {
-                                            try {
-                                                if (window.Alpine && Alpine.$data) alpineData = Alpine.$data(root);
-                                                else if (root.__x && root.__x.$data) alpineData = root.__x.$data;
-                                            } catch(e) {}
-                                            if (!alpineData) root = root.parentElement;
+                                        // 找到 wire:click 事件名
+                                        var eventName = null;
+                                        if (btns[i].hasAttribute('wire:click')) {
+                                            eventName = btns[i].getAttribute('wire:click');
+                                        } else if (btns[i].hasAttribute('@click')) {
+                                            eventName = btns[i].getAttribute('@click').replace(/['"]/g, '');
                                         }
 
-                                        if (alpineData) {
-                                            console.log('Alpine keys:', Object.keys(alpineData).slice(0,8));
+                                        // 找到 Livewire 组件实例
+                                        var componentEl = btns[i];
+                                        while (componentEl && !componentEl.getAttribute('wire:id')) {
+                                            componentEl = componentEl.parentElement;
                                         }
 
-                                        // 关键：检查按钮是否有 @click 或 wire:click 属性
-                                        var hasWireClick = allBtns[i].hasAttribute('wire:click') 
-                                            || allBtns[i].hasAttribute('@click')
-                                            || allBtns[i].hasAttribute('x-on:click');
+                                        if (componentEl && window.Livewire) {
+                                            var componentId = componentEl.getAttribute('wire:id');
+                                            var component = window.Livewire.all().find(c => c.id === componentId);
 
-                                        // 记录 Livewire 事件名供调试
-                                        var eventName = '';
-                                        if (hasWireClick) {
-                                            if (allBtns[i].hasAttribute('wire:click')) {
-                                                eventName = allBtns[i].getAttribute('wire:click');
-                                            } else if (allBtns[i].hasAttribute('@click')) {
-                                                eventName = allBtns[i].getAttribute('@click');
+                                            if (component) {
+                                                console.log('Found Livewire component, dispatching event: ' + eventName);
+
+                                                // 方法1: dispatch livewire:call 事件
+                                                btns[i].dispatchEvent(new CustomEvent('livewire:call', {
+                                                    bubbles: true,
+                                                    detail: { name: eventName, params: [] }
+                                                }));
+
+                                                // 方法2: 同时调用组件的 call 方法
+                                                setTimeout(() => {
+                                                    try { component.call(eventName); } catch(e) {}
+                                                }, 50);
+
+                                                return 'lw-dispatched:' + eventName;
                                             }
-                                            console.log('Livewire wire:click = ' + eventName);
                                         }
 
-                                        // 最后直接调用原生 click
-                                        allBtns[i].click();
-                                        return 'clicked:' + text.substring(0,20);
+                                        // 兜底：如果没有 Livewire API，手动模拟完整鼠标事件链
+                                        ['mousedown','mouseup','click'].forEach(function(evt){
+                                            btns[i].dispatchEvent(new MouseEvent(evt, {bubbles:true, cancelable:true, view:window}));
+                                        });
+                                        return 'manual-click:' + (eventName||'none');
                                     }
                                 }
                                 return 'not-found';
                             """)
-                            log(f"🎯 JS click 结果: {js_result}")
-                            if 'clicked' in js_result:
+                            log(f"🎯 Livewire 触发结果: {js_result}")
+                            if 'lw-dispatched' in js_result or 'manual-click' in js_result:
                                 click_done = True
                         except Exception as e:
-                            log(f"⚠️ driver.findElements 失败: {e}")
+                            log(f"⚠️ Livewire 触发失败: {e}")
 
                     # 策略3: 最后用 JS click() 直接调用（绕过所有事件系统）
                     if not click_done:
