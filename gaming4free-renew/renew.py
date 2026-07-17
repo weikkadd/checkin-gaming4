@@ -344,7 +344,7 @@ def main():
                 
                 with SB(
                     test=True,
-                    uc=True,
+                    uc=False,
                     headless=False,  # 【关键修复】改为 False, 由 xvfb-run 提供显示
                     proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
                     block_images=True,
