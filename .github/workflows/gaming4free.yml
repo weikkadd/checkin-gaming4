@@ -42,17 +42,35 @@ jobs:
             PROTO=$(echo "$NODE_LINK" | cut -d':' -f1)
             echo "[INFO] PROXY_URL 协议: $PROTO"
             bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+            # 【修复】等待代理启动
+            sleep 3
+            # 验证代理是否可用
+            if curl -x "socks5://127.0.0.1:1080" --max-time 5 -s https://api.ipify.org > /dev/null 2>&1; then
+              echo "[INFO] 代理启动成功"
+              echo "IS_PROXY=true" >> $GITHUB_ENV
+              echo "PROXY_SERVER=socks5://127.0.0.1:1080" >> $GITHUB_ENV
+              echo "代理出口 IP:"
+              curl -x "socks5://127.0.0.1:1080" -s https://api.ipify.org
+              echo
+            else
+              echo "[ERROR] 代理启动失败，将使用直连模式"
+              echo "IS_PROXY=false" >> $GITHUB_ENV
+              echo "PROXY_SERVER=" >> $GITHUB_ENV
+            fi
           else
-            echo "[WARN] PROXY_URL 未配置, 直连模式"
+            echo "[WARN] PROXY_URL 未配置, 使用直连模式"
+            echo "IS_PROXY=false" >> $GITHUB_ENV
+            echo "PROXY_SERVER=" >> $GITHUB_ENV
           fi
 
       - name: 🔧 验证代理连接
         run: |
+          echo "代理配置: IS_PROXY=${IS_PROXY}, PROXY_SERVER=${PROXY_SERVER}"
           if [ "${IS_PROXY}" = "true" ]; then
-            echo "[INFO] 代理出口 IP:"
+            echo "[INFO] 测试代理连接..."
             curl -x "$PROXY_SERVER" -s --max-time 10 https://api.ipify.org && echo
           else
-            echo "[WARN] 代理未启用"
+            echo "[WARN] 代理未启用，使用直连"
             curl -s --max-time 10 https://api.ipify.org && echo
           fi
 

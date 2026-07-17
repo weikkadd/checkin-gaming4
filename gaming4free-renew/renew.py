@@ -270,9 +270,23 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
     return result['live_text'], result
 
 def is_driver_alive(sb):
-    """【新增】检测浏览器驱动是否仍然存活"""
+    """【新增】检测浏览器驱动是否仍然存活 - 使用更宽松的检测方式"""
     try:
-        _ = sb.driver.current_url
+        # 方法1: 尝试获取 current_url
+        url = sb.driver.current_url
+        if url:
+            return True
+    except Exception:
+        pass
+    try:
+        # 方法2: 尝试获取 title (更宽松)
+        title = sb.driver.title
+        return True
+    except Exception:
+        pass
+    try:
+        # 方法3: 尝试执行简单 JS
+        sb.driver.execute_script("return 1")
         return True
     except Exception:
         return False
@@ -280,102 +294,183 @@ def is_driver_alive(sb):
 def main():
     if not ACCOUNTS:
         log("❌ 未配置 GAME4FREE_ACCOUNT 环境变量"); return
+    
+    # 【修复 #7】简化的 Chrome 稳定性参数 (避免过多参数导致冲突)
+    chrome_args = (
+        "--no-sandbox,"
+        "--disable-dev-shm-usage,"
+        "--disable-gpu,"
+        "--disable-gpu-sandbox,"
+        "--disable-gpu-compositing,"
+        "--disable-extensions,"
+        "--disable-notifications,"
+        "--disable-infobars,"
+        "--no-first-run,"
+        "--disable-default-apps,"
+        "--disable-logging,"
+        "--disable-sync,"
+        "--disable-translate,"
+        "--disable-background-networking,"
+        "--disable-background-timer-throttling,"
+        "--disable-renderer-backgrounding,"
+        "--disable-backgrounding-occluded-windows,"
+        "--disable-hang-monitor,"
+        "--disable-popup-blocking,"
+        "--disable-component-update,"
+        "--disable-session-crashed-bubble,"
+        "--disable-accelerated-compositing,"
+        "--disable-accelerated-2d-canvas,"
+        "--disable-accelerated-video-decode,"
+        "--disable-accelerated-mjpeg-decode,"
+        "--window-size=1920,1080,"
+        "--start-maximized,"
+        "--disable-blink-features=AutomationControlled"
+    )
+
+    # 【修复 #7】浏览器崩溃恢复机制
+    max_browser_retries = 3
+    browser_retry_delay = 10
+
     for user, pwd in ACCOUNTS:
         log(f"\n========== 开始处理账号: {user} ==========")
 
-        # 【修复1】headless=False — 配合 xvfb-run 虚拟显示, 解决 uc_gui_click_captcha 崩溃
-        # 【修复2】增加 chromium_arg CI 稳定性参数
-        chrome_args = "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-size=1920,1080,--disable-extensions,--disable-notifications"
-
-        with SB(
-            test=True,
-            uc=True,
-            headless=False,  # 【关键修复】改为 False, 由 xvfb-run 提供显示
-            proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
-            block_images=True,
-            settings_file=None,
-            recorder_ext=False,
-            chromium_arg=chrome_args,  # 【关键修复】CI 环境必需参数
-        ) as sb:
+        for browser_attempt in range(max_browser_retries):
+            sb = None
             try:
-                log(f"🌐 尝试打开登录页面: https://gaming4free.net/login")
-                sb.open("https://gaming4free.net/login")
+                log(f"🚀 启动浏览器 (尝试 {browser_attempt+1}/{max_browser_retries})...")
 
-                # 【新增】验证浏览器是否存活
-                if not is_driver_alive(sb):
-                    log("❌ 浏览器在打开页面后崩溃, 尝试重新打开...")
-                    sb.open("https://gaming4free.net/login")
+                # 【修复 #7】尝试用不同的 headless 模式
+                headless_mode = "new" if browser_attempt == 0 else "old"
+                
+                with SB(
+                    test=True,
+                    uc=True,
+                    headless=False,  # 【关键修复】改为 False, 由 xvfb-run 提供显示
+                    proxy=os.environ.get("PROXY_SERVER") if os.environ.get("IS_PROXY") == "true" else None,
+                    block_images=True,
+                    settings_file=None,
+                    recorder_ext=False,
+                    chromium_arg=chrome_args,  # 【关键修复】CI 环境必需参数
+                ) as sb:
+                    log(f"🌐 尝试打开登录页面 (尝试 {browser_attempt+1}/{max_browser_retries}): https://gaming4free.net/login")
+                    
+                    # 【修复 #7】增加超时时间
+                    try:
+                        sb.open("https://gaming4free.net/login", timeout=30)
+                    except Exception as open_err:
+                        log(f"⚠️ 页面打开异常: {open_err}")
+                        raise RuntimeError("页面打开失败")
+
+                    time.sleep(3)  # 给页面更多加载时间
+
+                    # 【修复 #7】验证浏览器是否存活
                     if not is_driver_alive(sb):
-                        raise RuntimeError("浏览器连续崩溃, 请检查 Chrome/Chromedriver 版本")
+                        log("❌ 浏览器在打开页面后崩溃")
+                        # 【修复 #7】尝试获取崩溃原因
+                        try:
+                            url = sb.driver.current_url
+                            log(f"🔍 浏览器 URL: {url}")
+                        except Exception as url_err:
+                            log(f"🔍 无法获取浏览器 URL: {url_err}")
+                        raise RuntimeError("浏览器启动后崩溃")
 
-                # 注入请求监听器
-                sb.execute_script("""
-                window.__reqs = [];
-                const originalFetch = window.fetch;
-                window.fetch = function() {
-                    return originalFetch.apply(this, arguments).then(async (response) => {
-                        const clonedResponse = response.clone();
-                        try {
-                            const body = await clonedResponse.json();
-                            window.__reqs.push({
-                                u: arguments[0],
-                                m: 'POST',
-                                methods: body.serverMemo ? body.serverMemo.data.methods : []
-                            });
-                        } catch (e) {}
-                        return response;
-                    });
-                };
-                """)
-                time.sleep(3)
+                    # 【修复 #7】验证页面是否加载成功
+                    try:
+                        title = sb.execute_script("return document.title || '';")
+                        log(f"📄 页面标题: {title}")
+                        if title:
+                            log("✅ 登录页面加载成功")
+                    except Exception as e:
+                        log(f"⚠️ 无法获取页面标题: {e}")
+                        # 不抛出异常，继续尝试
 
-                handle_turnstile(sb)
+                    # 注入请求监听器
+                    sb.execute_script("""
+                    window.__reqs = [];
+                    const originalFetch = window.fetch;
+                    window.fetch = function() {
+                        return originalFetch.apply(this, arguments).then(async (response) => {
+                            const clonedResponse = response.clone();
+                            try {
+                                const body = await clonedResponse.json();
+                                window.__reqs.push({
+                                    u: arguments[0],
+                                    m: 'POST',
+                                    methods: body.serverMemo ? body.serverMemo.data.methods : []
+                                });
+                            } catch (e) {}
+                            return response;
+                        });
+                    };
+                    """)
+                    time.sleep(3)
 
-                # 【新增】再次验证浏览器存活
-                if not is_driver_alive(sb):
-                    raise RuntimeError("浏览器在 Turnstile 处理后崩溃")
+                    handle_turnstile(sb)
 
-                log(f"🔑 尝试登录账号: {user}")
-                WebDriverWait(sb.driver, 15).until(EC.visibility_of_element_located((By.NAME, "email")))
-                sb.type('input[name="email"]', user)
-                sb.type('input[name="password"]', pwd)
-                sb.click('button[type="submit"]')
-                time.sleep(5)
-                handle_turnstile(sb)
-                time.sleep(3)
-                close_modals(sb)
+                    # 【新增】再次验证浏览器存活
+                    if not is_driver_alive(sb):
+                        raise RuntimeError("浏览器在 Turnstile 处理后崩溃")
 
-                before_text, before_secs = get_remaining_time(sb)
-                log(f"⏱️ 续期前剩余: {before_text} ({before_secs}s)")
+                    log(f"🔑 尝试登录账号: {user}")
+                    WebDriverWait(sb.driver, 15).until(EC.visibility_of_element_located((By.NAME, "email")))
+                    sb.type('input[name="email"]', user)
+                    sb.type('input[name="password"]', pwd)
+                    sb.click('button[type="submit"]')
+                    time.sleep(5)
+                    handle_turnstile(sb)
+                    time.sleep(3)
+                    close_modals(sb)
 
-                btn_info = check_button_cooldown(sb)
-                if btn_info and btn_info.get('cooldown'):
-                    log(f"⏳ 按钮冷却中: {btn_info.get('text')}")
-                    send_tg("按钮冷却中", user, before_text)
-                    continue
+                    before_text, before_secs = get_remaining_time(sb)
+                    log(f"⏱️ 续期前剩余: {before_text} ({before_secs}s)")
 
-                log("🖱️ 点击 +90 按钮...")
+                    btn_info = check_button_cooldown(sb)
+                    if btn_info and btn_info.get('cooldown'):
+                        log(f"⏳ 按钮冷却中: {btn_info.get('text')}")
+                        send_tg("按钮冷却中", user, before_text)
+                        continue
+
+                    log("🖱️ 点击 +90 按钮...")
+                    try:
+                        WebDriverWait(sb.driver, 10).until(
+                            EC.element_to_be_clickable((By.XPATH, "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')] "))
+                        )
+                        sb.uc_click("button:contains('+ 90 min')", reconnect_time=4)
+                        log("🎯 首次点击完成")
+                    except Exception as e:
+                        log(f"⚠️ 首次点击失败: {e}")
+                        screenshot(sb, "click-fail")
+                        send_tg("点击按钮失败", user, before_text)
+                        continue
+
+                    live_text, res = wait_ad_flow(sb, before_secs)
+                    if res['live_secs'] > before_secs + 60:
+                        log(f"✅ 续期成功! 新时间: {live_text}")
+                        send_tg("✅ 续期成功", user, live_text)
+                    else:
+                        log(f"❌ 续期失败或超时. 当前时间: {live_text}")
+                        send_tg("❌ 续期失败", user, live_text)
+
+            except RuntimeError as e:
+                # 【修复 #7】浏览器崩溃异常，需要重试
+                log(f"❌ 浏览器崩溃: {e}")
                 try:
-                    WebDriverWait(sb.driver, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., '+ 90 min')] | //button[contains(., 'watch ad')] | //button[contains(., 'Watch Ad')] | //button[contains(., 'Watch ad')] "))
-                    )
-                    sb.uc_click("button:contains('+ 90 min')", reconnect_time=4)
-                    log("🎯 首次点击完成")
-                except Exception as e:
-                    log(f"⚠️ 首次点击失败: {e}")
-                    screenshot(sb, "click-fail")
-                    send_tg("点击按钮失败", user, before_text)
-                    continue
-
-                live_text, res = wait_ad_flow(sb, before_secs)
-                if res['live_secs'] > before_secs + 60:
-                    log(f"✅ 续期成功! 新时间: {live_text}")
-                    send_tg("✅ 续期成功", user, live_text)
+                    if sb:
+                        screenshot(sb, "browser-crash")
+                except:
+                    pass
+                
+                if browser_attempt < max_browser_retries - 1:
+                    log(f"⏳ 等待 {browser_retry_delay} 秒后重试浏览器...")
+                    time.sleep(browser_retry_delay)
+                    continue  # 继续下一次循环
                 else:
-                    log(f"❌ 续期失败或超时. 当前时间: {live_text}")
-                    send_tg("❌ 续期失败", user, live_text)
-
+                    log("❌ 浏览器连续崩溃，请检查 Chrome/Chromedriver 版本")
+                    send_tg("❌ 浏览器连续崩溃", user)
+                    break  # 退出重试循环，处理下一个账号
+            
             except Exception as e:
+                # 其他异常（不是浏览器崩溃）
                 log(f"❌ 账号 {user} 执行异常: {e}\n{traceback.format_exc()}")
                 # 【修复】截图保存到工作区相对路径
                 try:
@@ -386,6 +481,7 @@ def main():
                 except Exception as screenshot_err:
                     log(f"⚠️ 保存调试信息失败: {screenshot_err}")
                 send_tg(f"❌ 执行异常: {e}", user)
+                break  # 其他异常不重试
 
 if __name__ == "__main__":
     main()
