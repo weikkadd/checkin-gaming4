@@ -214,22 +214,26 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
     result = {'extend_seen': False, 'reward_ready': False, 'ad_seen': False, 'live_text': '', 'live_secs': 0}
     log(f"🎬 进入广告观看流程 (最长 {max_wait}秒, 期间不刷新页面)...")
     t0 = time.time()
-    clicked_again = False
-    alpine_logged = 0
+    reward_handled = False
     ad_first_seen = None
     while time.time() - t0 < max_wait:
         elapsed = time.time() - t0
+
+        # === 1. 检测 Livewire POST 请求 ===
         try:
             calls = sb.execute_script(
                 "(function(){ return (window.__reqs||[]).filter(function(r){"
                 "return r.m==='POST' && /livewire/i.test(r.u) && (r.methods||[]).length>0;"
                 "}).map(function(r){ return {methods: r.methods}; }); })();"
             ) or []
-        except Exception as e: log(f"⚠️ 获取 Livewire 调用失败: {e}"); calls = []
+        except Exception as e: 
+            log(f"⚠️ 获取 Livewire 调用失败: {e}")
+            calls = []
         real_methods = []
         for c in calls:
             for m in (c.get('methods') or []):
-                if m not in POLLING_METHODS and m not in real_methods: real_methods.append(m)
+                if m not in POLLING_METHODS and m not in real_methods: 
+                    real_methods.append(m)
         if real_methods:
             log(f"✅ 捕获到真实的 Livewire 续期请求: method={real_methods}")
             result['extend_seen'] = True
@@ -240,66 +244,66 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                 log(f"🎉 页面已自动刷新剩余时间: {lt}")
                 result['live_text'], result['live_secs'] = lt, ls
                 break
+
+        # === 2. 检测 Alpine.js 广告奖励状态 ===
         st = read_alpine_state(sb)
         if st:
-            if st.get('adRewardReady') is True and not result['reward_ready']:
-                result['reward_ready'] = True
-                log(f"🎁 [{int(elapsed)}秒] adRewardReady=true — 广告奖励已就绪!")
-            elif alpine_logged < 2:
-                log(f"🔬 Alpine框架[{int(elapsed)}秒]: 未获取到组件状态")
-                alpine_logged += 1
+            if st.get('adRewardReady') is True and not reward_handled:
+                reward_handled = True
+                log("🎁 广告奖励已就绪！等待 5 分钟冷却结束...")
+
+                # 等待冷却结束（轮询检查按钮状态）
+                for ci in range(300):  # 最多等 5 分钟
+                    cooldown_info = check_button_cooldown(sb)
+                    if cooldown_info and cooldown_info.get('cooldown'):
+                        remaining = cooldown_info.get('remaining', '?')
+                        log(f"   ⏳ 按钮冷却中，剩余 {remaining}秒")
+                        time.sleep(10)
+                        continue
+                    else:
+                        log("✅ 按钮冷却已结束，等待续期生效...")
+                        break
+
+                # 再等 30 秒让系统完成续期
+                log("⏳ 等待续期生效 (30秒)...")
+                time.sleep(30)
+
+                # 检查结果
+                lt, ls = get_remaining_time(sb)
+                if ls > before_secs + 3000:
+                    log(f"🎉 续期成功！新时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
+                    result['live_text'], result['live_secs'] = lt, ls
+                else:
+                    log(f"⚠️ 续期可能失败。当前时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
+                    result['live_text'], result['live_secs'] = lt, ls
+                break  # ✅ 关键：处理完毕后跳出循环
+
+        # === 3. 检测广告播放 ===
         ad = detect_ad(sb)
         if ad and not result['ad_seen']:
             result['ad_seen'] = True
             ad_first_seen = time.time()
             log(f"🎬 [{int(elapsed)}秒] 检测到广告播放: {ad}")
             screenshot(sb, "ad-showing")
-        if result['reward_ready'] and not clicked_again:
-            clicked_again = True
-            log("🎁 广告奖励已就绪！等待 5 分钟冷却结束...")
 
-            # 【关键修复】只需等待冷却结束，无需二次点击
-            # 系统会在冷却完成后自动续期
-            for ci in range(300):  # 最多等 5 分钟 (300 * 10秒)
-                cooldown_info = check_button_cooldown(sb)
-                if cooldown_info and cooldown_info.get('cooldown'):
-                    remaining = cooldown_info.get('remaining', '?')
-                    log(f"   ⏳ 按钮冷却中，剩余 {remaining}秒")
-                    time.sleep(10)
-                    continue
-                else:
-                    log("✅ 按钮冷却已结束，等待续期生效...")
-                    break
+        # === 4. 定期尝试跳过广告控制 ===
+        if result['ad_seen'] and ad_first_seen:
+            try_ad_controls(sb, time.time() - ad_first_seen)
 
-            # 再等 30 秒让系统完成续期
-            log("⏳ 等待续期生效 (30秒)...")
-            time.sleep(30)
-
-            # 检查最终结果
-            lt, ls = get_remaining_time(sb)
-            if ls > before_secs + 3000:  # 增加了至少 50 分钟
-                log(f"🎉 续期成功！新时间: {lt} ({ls//3600}小时{ls%3600//60}分)")
-                result['live_text'], result['live_secs'] = lt, ls
-            else:
-                log(f"⚠️ 续期可能失败。当前时间: {lt} ({ls//3600}小时{ls%3600//60}分)，期望增加3000秒以上")
-                result['live_text'], result['live_secs'] = lt, ls
-
-            continue
-
-        # 定期检查剩余时间变化
-        if int(time.time() - t0) % 10 == 0 and time.time() - t0 > 5:
+        # === 5. 每分钟检查一次剩余时间是否自然增长 ===
+        if int(elapsed) % 60 == 0 and elapsed > 10:
             try:
                 lt, ls = get_remaining_time(sb)
                 if ls > before_secs + 60:
-                    log(f"🎉 [{int(time.time()-t0)}秒] 页面时间已自动更新: {lt}")
+                    log(f"🎉 [{int(elapsed)}秒] 页面时间已自动更新: {lt}")
                     result['live_text'], result['live_secs'] = lt, ls
                     break
-            except Exception as e:
+            except Exception as e: 
                 log(f"⚠️ 实时时间检查失败: {e}")
 
         time.sleep(1)
 
-    # 【关键修复】确保函数总有返回值
+    # 确保函数总有返回值
     if not result['live_text']:
         lt, ls = get_remaining_time(sb)
         result['live_text'], result['live_secs'] = lt, ls
@@ -504,109 +508,132 @@ def main():
 
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
 
-                    # 【核心修复】先等待 Alpine.js 组件初始化完成，再找按钮
-                    log("⏳ 等待 Alpine.js 组件初始化...")
-                    sb.execute_script("""
-                        // 简单等待：让页面自然渲染，不做 Alpine API 调用
-                        return typeof Alpine !== 'undefined' ? 'alpine-loaded' : 'no-alpine';
-                    """)
-                    time.sleep(2)
-
+                    # 【核心修复】使用 Livewire API 直接调用，不依赖 DOM 渲染
                     click_done = False
-                    # 策略1: 通过 CSS class 找按钮（rt-btn-free 是免费续期按钮）
-                    if not click_done:
+
+                    # === 策略1: window.Livewire API 直接调用 ===
+                    try:
+                        log("📍 策略1: Livewire API 直接调用...")
+
+                        # 先找 .rt-btn-free 按钮获取 wire:click 方法名
+                        btn_method = None
                         try:
-                            log("📍 策略1: 通过 .rt-btn-free 类名查找按钮...")
                             elem = sb.find_element(By.CSS_SELECTOR, 'button.rt-btn-free', timeout=5)
                             text = (elem.text or '').strip()
                             log(f"   找到按钮文本: '{text}'")
-                            if '90' in text or 'extend' in text.lower():
-                                # 【关键修复】强制使按钮可交互
-                                sb.execute_script("""
-                                    arguments[0].style.cssText += '; pointer-events:auto !important; visibility:visible !important; opacity:1 !important; display:flex !important;';
-                                    arguments[0].removeAttribute('disabled');
-                                    arguments[0].className = arguments[0].className.replace(/\b(opacity-50|cursor-not-allowed|pointer-events-none|x-hidden)\b/g, '');
-                                    arguments[0].scrollIntoView({block:'center', behavior:'instant'});
-                                """, elem)
-                                time.sleep(0.5)
-                                # 检查是否有 wire:click
-                                has_lw = elem.get_attribute('wire:click') or ''
-                                log(f"   wire:click 属性: '{has_lw}'")
-                                if has_lw:
-                                    log(f"   ✅ 使用 Livewire API 调用: {has_lw}")
-                                    sb.execute_script(f"""
-                                        var comp = arguments[0];
-                                        while (comp && !comp.getAttribute('wire:id')) {{
-                                            comp = comp.parentElement;
-                                        }}
-                                        if (comp && window.Livewire) {{
-                                            var cid = comp.getAttribute('wire:id');
-                                            var c = window.Livewire.find(cid);
-                                            if (c) {{
-                                                c.call('{has_lw}');
-                                                return 'lw-called:' + '{has_lw}';
-                                            }}
-                                        }}
-                                        return 'no-lw-api';
-                                    """, elem)
-                                    click_done = True
-                                else:
-                                    elem.click()
-                                    click_done = True
+                            has_lw = elem.get_attribute('wire:click') or ''
+                            if has_lw:
+                                btn_method = has_lw
+                                log(f"   ✅ 获取到 wire:click 方法: {btn_method}")
                             else:
-                                log(f"   ⚠️ rt-btn-free 不是续期按钮，跳过")
+                                log(f"   ⚠️ 按钮没有 wire:click 属性")
                         except Exception as e:
-                            log(f"   ⚠️ 策略1失败: {e}")
+                            log(f"   ⚠️ 找不到 .rt-btn-free 按钮: {e}")
 
-                    # 策略2: 通用 click 尝试
-                    if not click_done:
-                        try:
-                            log("📍 策略2: 直接 JavaScript .click()...")
-                            js_result = sb.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].textContent || '').trim();
-                                    if ((txt.includes('+90') || txt.includes('90 min') || txt.includes('Extend')) 
-                                        && btns[i].offsetParent !== null) {
-                                        btns[i].scrollIntoView({block: 'center'});
-                                        // 清除可能的 disabled/pointer-events
-                                        btns[i].removeAttribute('disabled');
-                                        btns[i].style.pointerEvents = 'auto';
-                                        // 原生 click
-                                        btns[i].click();
-                                        return 'clicked:' + txt;
-                                    }
-                                }
-                                return 'not-found-any-button';
+                        if btn_method:
+                            # 方式 A: 通过组件 ID 调用指定方法
+                            lw_result = sb.execute_script(f"""
+                                var components = window.Livewire ? window.Livewire.all() : [];
+                                for (var c = 0; c < components.length; c++) {{
+                                    try {{
+                                        components[c].call('{btn_method}');
+                                        console.log('Called: ' + '{btn_method}');
+                                        return 'called:' + '{btn_method}';
+                                    }} catch(e) {{}}
+                                }}
+                                return 'no-match';
                             """)
-                            log(f"🎯 JS click 结果: {js_result}")
-                            if 'clicked:' in js_result:
+                            log(f"   🎯 Livewire call 结果: {lw_result}")
+                            if 'called:' in lw_result:
                                 click_done = True
-                        except Exception as e:
-                            log(f"⚠️ 策略2失败: {e}")
-
-                    # 策略3: dispatch livewire:submit 事件
-                    if not click_done:
-                        try:
-                            log("📍 策略3: Livewire submit 事件...")
+                                log("   ✅ Livewire API 调用成功！")
+                        else:
+                            # 方式 B: 遍历组件尝试常见方法名
+                            log("   📍 尝试常见方法名...")
                             lw_result = sb.execute_script("""
                                 var components = window.Livewire ? window.Livewire.all() : [];
+                                var methods = ['extendServer', 'extend', 'renew', 'claimReward'];
                                 for (var c = 0; c < components.length; c++) {
-                                    try {
-                                        // 尝试常见的方法名
-                                        ['extendServer', 'extend', 'renew', 'refreshTime'].forEach(function(method) {
-                                            try {
-                                                components[c].call(method);
-                                                console.log('Called: ' + method);
-                                                return method;
-                                            } catch(e) {}
-                                        });
-                                    } catch(e) {}
+                                    for (var m = 0; m < methods.length; m++) {
+                                        try {
+                                            components[c].call(methods[m]);
+                                            console.log('Called: ' + methods[m]);
+                                            return 'called:' + methods[m];
+                                        } catch(e) {}
+                                    }
                                 }
                                 return 'no-match';
                             """)
-                            log(f"🎯 Livewire API 结果: {lw_result}")
-                            if lw_result != 'no-match':
+                            log(f"   🎯 通用方法调用结果: {lw_result}")
+                            if 'called:' in lw_result:
+                                click_done = True
+                                log("   ✅ Livewire API 调用成功！")
+
+                    except Exception as e:
+                        log(f"   ⚠️ 策略1异常: {e}")
+
+                    # === 策略2: dispatch livewire:submit 事件 ===
+                    if not click_done:
+                        try:
+                            log("📍 策略2: dispatch livewire:submit 事件...")
+
+                            elem = sb.find_element(By.CSS_SELECTOR, 'button.rt-btn-free', timeout=5)
+                            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
+
+                            js_code = """
+                                var btn = arguments[0];
+                                btn.style.pointerEvents = 'auto';
+                                btn.removeAttribute('disabled');
+
+                                var submitEvent = new CustomEvent('livewire:submit', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    detail: {
+                                        component: { 
+                                            id: btn.closest('[wire:id]')?.getAttribute('wire:id'),
+                                            snapshot: {}, memo: {}, entangle: function() {} 
+                                        },
+                                        methods: [btn.getAttribute('wire:click') || 'extend'],
+                                        params: [], commit: {}
+                                    }
+                                });
+
+                                ['mousedown','mouseup','click'].forEach(function(type){
+                                    btn.dispatchEvent(new MouseEvent(type, {
+                                        bubbles: true, cancelable: true, view: window
+                                    }));
+                                });
+
+                                btn.dispatchEvent(submitEvent);
+                                return 'events-dispatched';
+                            """
+                            result = sb.execute_script(js_code, elem)
+                            log(f"   🎯 事件分发结果: {result}")
+                            click_done = True
+                            time.sleep(1)
+
+                        except Exception as e:
+                            log(f"   ⚠️ 策略2失败: {e}")
+
+                    # === 策略3: 纯 JS .click() 兜底 ===
+                    if not click_done:
+                        try:
+                            log("📍 策略3: 纯 JS .click() 兜底...")
+                            js_result = sb.execute_script("""
+                                var btns = document.querySelectorAll('button');
+                                for (var i = 0; i < btns.length; i++) {
+                                    if ((btns[i].textContent || '').indexOf('90') !== -1) {
+                                        btns[i].scrollIntoView({block: 'center'});
+                                        btns[i].removeAttribute('disabled');
+                                        btns[i].style.cssText += '; pointer-events:auto !important;';
+                                        btns[i].click();
+                                        return 'native-clicked:' + (btns[i].textContent || '').trim();
+                                    }
+                                }
+                                return 'not-found';
+                            """)
+                            log(f"🎯 兜底 click 结果: {js_result}")
+                            if 'native-clicked' in js_result:
                                 click_done = True
                         except Exception as e:
                             log(f"⚠️ 策略3失败: {e}")
@@ -616,6 +643,8 @@ def main():
                         screenshot(sb, "点击全部失败")
                         send_tg("❌ 无法点击续期按钮", server_name, before_text)
                         continue
+
+
                     # 点击后等待页面响应
                     log("⏳ 等待页面响应 (最多10秒)...")
                     responded = False
