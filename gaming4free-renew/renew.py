@@ -380,6 +380,21 @@ def main():
                         log(f"📄 页面标题: {title}")
                         if title:
                             log("✅ 页面加载成功")
+
+                    # 注入 Cookie
+                    if GF_COOKIE:
+                        log("🍪 注入 Cookie...")
+                        try:
+                            for cookie in GF_COOKIE.split(";" ):
+                                if "=" in cookie:
+                                    name, value = cookie.split("=", 1)
+                                    cookie_dict = {"name": name.strip(), "value": value.strip(), "domain": ".gaming4free.net"}
+                                    sb.driver.add_cookie(cookie_dict)
+                            sb.open(user_server_url, timeout=30)
+                            time.sleep(3)
+                            log("✅ Cookie 注入完成")
+                        except Exception as e:
+                            log(f"⚠️ Cookie 注入失败: {e}")
                     except Exception as e:
                         log(f"⚠️ 无法获取页面标题: {e}")
                         # 不抛出异常，继续尝试
@@ -418,20 +433,20 @@ def main():
                     try:
                         # 尝试多种方式定位邮箱输入框
                         selectors = [
-                            (0027name0027, 0027email0027),
-                            (0027name0027, 0027username0027),
-                            (0027placeholder0027, 0027Email0027),
-                            (0027placeholder0027, 0027email0027),
-                            (0027type0027, 0027email0027),
+                            ('name', 'email'),
+                            ('name', 'username'),
+                            ('placeholder', 'Email'),
+                            ('placeholder', 'email'),
+                            ('type', 'email'),
                         ]
                         for attr, value in selectors:
                             try:
-                                sb.wait_for_element_visible(f0027input[{attr}="{value}"]0027, timeout=5)
-                                log(f"✅ 找到邮箱输入框: [{attr}=0027{value}0027]")
+                                sb.wait_for_element_visible(f'input[{attr}="{value}"]', timeout=5)
+                                log(f"✅ 找到邮箱输入框: [{attr}='{value}']")
                                 break
                             except: continue
                         else:
-                            raise Exception(0027未找到邮箱输入框0027)
+                            raise Exception('未找到邮箱输入框')
                     except Exception as e:
                         screenshot(sb, "no-login-form")
                         raise Exception(f"等待登录表单失败: {e}")
