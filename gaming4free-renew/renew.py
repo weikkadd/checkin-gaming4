@@ -285,6 +285,28 @@ def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
                 result['live_text'], result['live_secs'] = lt, ls
 
             continue
+
+        # 定期检查剩余时间变化
+        if int(time.time() - t0) % 10 == 0 and time.time() - t0 > 5:
+            try:
+                lt, ls = get_remaining_time(sb)
+                if ls > before_secs + 60:
+                    log(f"🎉 [{int(time.time()-t0)}秒] 页面时间已自动更新: {lt}")
+                    result['live_text'], result['live_secs'] = lt, ls
+                    break
+            except Exception as e:
+                log(f"⚠️ 实时时间检查失败: {e}")
+
+        time.sleep(1)
+
+    # 【关键修复】确保函数总有返回值
+    if not result['live_text']:
+        lt, ls = get_remaining_time(sb)
+        result['live_text'], result['live_secs'] = lt, ls
+
+    return result['live_text'], result
+
+
 def is_driver_alive(sb):
     """【新增】检测浏览器是否仍然正常运行 - 使用更宽松的检测方式"""
     try:
@@ -499,8 +521,14 @@ def main():
                             text = (elem.text or '').strip()
                             log(f"   找到按钮文本: '{text}'")
                             if '90' in text or 'extend' in text.lower():
-                                sb.execute_script("arguments[0].scrollIntoView({block:'center', behavior:'instant'});", elem)
-                                time.sleep(0.3)
+                                # 【关键修复】强制使按钮可交互
+                                sb.execute_script("""
+                                    arguments[0].style.cssText += '; pointer-events:auto !important; visibility:visible !important; opacity:1 !important; display:flex !important;';
+                                    arguments[0].removeAttribute('disabled');
+                                    arguments[0].className = arguments[0].className.replace(/\b(opacity-50|cursor-not-allowed|pointer-events-none|x-hidden)\b/g, '');
+                                    arguments[0].scrollIntoView({block:'center', behavior:'instant'});
+                                """, elem)
+                                time.sleep(0.5)
                                 # 检查是否有 wire:click
                                 has_lw = elem.get_attribute('wire:click') or ''
                                 log(f"   wire:click 属性: '{has_lw}'")
