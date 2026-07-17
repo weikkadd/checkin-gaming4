@@ -412,7 +412,29 @@ def main():
                         raise RuntimeError("浏览器在 Turnstile 处理后崩溃")
 
                     log(f"🔑 尝试登录账号: {user}")
-                    WebDriverWait(sb.driver, 15).until(EC.visibility_of_element_located((By.NAME, "email")))
+                    # 先截图看页面状态
+                    screenshot(sb, "before-login")
+                    log("🔍 等待登录表单...")
+                    try:
+                        # 尝试多种方式定位邮箱输入框
+                        selectors = [
+                            (0027name0027, 0027email0027),
+                            (0027name0027, 0027username0027),
+                            (0027placeholder0027, 0027Email0027),
+                            (0027placeholder0027, 0027email0027),
+                            (0027type0027, 0027email0027),
+                        ]
+                        for attr, value in selectors:
+                            try:
+                                sb.wait_for_element_visible(f0027input[{attr}="{value}"]0027, timeout=5)
+                                log(f"✅ 找到邮箱输入框: [{attr}=0027{value}0027]")
+                                break
+                            except: continue
+                        else:
+                            raise Exception(0027未找到邮箱输入框0027)
+                    except Exception as e:
+                        screenshot(sb, "no-login-form")
+                        raise Exception(f"等待登录表单失败: {e}")
                     sb.type('input[name="email"]', user)
                     sb.type('input[name="password"]', pwd)
                     sb.click('button[type="submit"]')
