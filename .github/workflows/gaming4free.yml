@@ -23,33 +23,21 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
-            google-chrome-stable \
             xvfb \
-            xdotool \
-            wget \
-            unzip
+            xdotool
 
-      - name: 🌐 安装 Chrome 和 Chromedriver (版本匹配)
+      - name: 🌐 安装 Chrome 和匹配版本的 Chromedriver
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable  # 自动匹配最新稳定版
+        id: chrome
+
+      - name: 📋 验证 Chrome 和 Chromedriver
         run: |
-          # 获取已安装的 Chrome 版本
-          CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
-          echo "[INFO] Chrome 版本: $CHROME_VERSION"
-          
-          # 下载匹配的 Chromedriver
-          CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-          echo "[INFO] 下载 Chromedriver: $CHROMEDRIVER_URL"
-          
-          wget -q "$CHROMEDRIVER_URL" -O chromedriver.zip
-          unzip -q chromedriver.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/chromedriver
-          
-          # 验证 Chromedriver
-          CHROMEDRIVER_VERSION=$(chromedriver --version)
-          echo "[INFO] Chromedriver 版本: $CHROMEDRIVER_VERSION"
-          
-          # 设置环境变量
-          export PATH="/usr/local/bin:$PATH"
+          echo "[INFO] Chrome 版本: $(google-chrome --version)"
+          echo "[INFO] Chromedriver 版本: $(chromedriver --version)"
+          echo "[INFO] Chrome 路径: $(which google-chrome)"
+          echo "[INFO] Chromedriver 路径: $(which chromedriver)"
 
       - name: 🐍 安装 Python 依赖
         working-directory: gaming4free-renew
