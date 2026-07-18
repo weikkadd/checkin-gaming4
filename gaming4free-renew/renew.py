@@ -1065,7 +1065,8 @@ def main():
                     else:
                         log(f"⚠️ 续期结果: {final_text}")
                         send_tg(f"⚠️ 续期完成: {final_text}", server_name, final_text)
-                    account_finished = True res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
+                    account_finished = True
+                    res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
 
                     # === Pro 最终确认 ===
                     ok, verify_text = verify_extend_success(sb, before_secs)
