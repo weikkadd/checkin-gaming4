@@ -510,6 +510,7 @@ def main():
     for server_name, server_url in ACCOUNTS:
         log(f"\n========== 开始处理服务器账号: {server_name} ==========")
 
+        account_finished = False
         for browser_attempt in range(max_browser_retries):
             sb = None
             try:
@@ -875,13 +876,17 @@ def main():
                         """))
 
                     responded = False
+                    turnstile_handled_count = 0
                     for wi in range(20):
                         time.sleep(1)
                         
                         # 1. 优先检查并处理 Turnstile
                         if check_turnstile_present():
-                            log(f"🛡️ [第 {wi+1} 秒] 实时检测到 Turnstile，立即处理...")
-                            screenshot(sb, "turnstile-realtime-detected")
+                            # 减少重复日志和截图，每 5 秒记录一次
+                            if turnstile_handled_count % 5 == 0:
+                                log(f"🛡️ [第 {wi+1} 秒] 实时检测到 Turnstile，正在处理 (已处理 {turnstile_handled_count} 次)...")
+                                screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
+                            
                             sb.execute_script("""
                                 var turnstiles = document.querySelectorAll('.cf-turnstile > div');
                                 for (var t = 0; t < turnstiles.length; t++) {
@@ -889,13 +894,12 @@ def main():
                                     if (boxes.length > 0) { boxes[0].click(); break; }
                                 }
                                 if (turnstiles.length > 0) { turnstiles[0].click(); }
-                                // 兜底: 尝试点击中心位置
                                 if (turnstiles.length === 0) {
                                     var el = document.querySelector('iframe[src*="challenges.cloudflare.com"]') || document.querySelector('.cf-turnstile');
                                     if (el) el.click();
                                 }
                             """)
-                            # 处理完验证码后继续等待，不要直接 break
+                            turnstile_handled_count += 1
                             continue
 
                         # 2. 检查时间是否增加
@@ -943,6 +947,9 @@ def main():
                     if ok:
                         log(f"✅ Pro续期成功: {verify_text}")
                         send_tg("✅ Pro续期成功", server_name, verify_text)
+                        # 【关键修复】续期成功后，标记并退出重试循环
+                        account_finished = True
+                        break
                     else:
                         log(f"❌ Pro续期失败: {verify_text}")
                         send_tg("❌ Pro续期失败", server_name, verify_text)
@@ -952,7 +959,11 @@ def main():
                             log("♻️ Pro模式: 失败自动重试...")
                             recover_page(sb, server_url)
                             time.sleep(5)
-                            continue  # 重新执行整个流程
+                            continue  # 重新执行内部 browser_attempt 流程
+                
+                # 如果账号处理完成，跳出浏览器重试循环
+                if account_finished:
+                    break
 
             except RuntimeError as e:
                 log(f"❌ 浏览器进程崩溃: {e}")
