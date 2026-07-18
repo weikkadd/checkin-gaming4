@@ -1,0 +1,344 @@
+﻿
+  raw_accounts = os.environ.get("GAME4FREE_ACCOUNT", "").strip().splitlines()  # 账号列表
+  
+  ACCOUNTS = []
+> for line in raw_accounts:
+      line = line.strip()
+      if not line: continue
+      parts = line.split(",", 1)
+  def send_tg(result, server_name="", expiry=""):
+      """【Pro】发送 Telegram 续期结果通知 - 详细格式"""
+      if not TG_TOKEN or not TG_CHAT_ID: return
+>     # Mask email for privacy: show first 2 and last 2 chars
+      masked = server_name[:2] + '****' + server_name[-2:] if len(server_name) > 4 else server_name
+      msg = f"""🎮Gaming4Free Pro
+  🖥️服务器: {server_name}
+          
+          # === 策略1: 查找包含 expire/remaining/end 关键词附近的时间 ===
+          lines = page_text.split('\n')
+>         for i, line in enumerate(lines):
+              lower_line = line.lower().strip()
+>             if any(kw in lower_line for kw in ['expire', 'remaining', 'ends', 'due', '到期', '剩余']):
+                  time_match = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
+                  if time_match:
+                      t = time_match.group(1)
+                      t = hms_match.group(1).strip()
+                      s = parse_countdown_seconds(t)
+                      if s > 0: return t, s
+>                 for j in range(max(0, i-1), min(len(lines), i+3)):
+                      tm = re.search(r'(\d{1,2}:\d{2}:\d{2})', lines[j])
+                      if tm:
+                          t = tm.group(1)
+              '[data-testid*="timer"]',
+              '#sd-timer',
+          ]
+>         for sel in css_selectors:
+              try:
+                  text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textCon
+tent.trim():''; }})()")
+                  if text and len(text) < 50:
+          
+          # === 策略3: 匹配所有 Xh Ym 格式的时间，排除 uptime 上下文 ===
+          all_hm_matches = re.findall(r'(\d+\s*h\s*\d+\s*m)', page_text, re.I)
+>         for m in all_hm_matches:
+              t = m.strip()
+              s = parse_countdown_seconds(t)
+              if s > 0 and s < 86400 * 365:
+      """关闭页面上的弹窗"""
+      try:
+          sels = ['button:contains("Maybe later")', '.modal-close', '[aria-label="Close"]']
+>         for sel in sels:
+              try:
+                  if sb.execute_script(f"(function(){{ return !!document.querySelector('{sel}'); }})()"):
+                      sb.click(sel); log(f"🛡️ 已关闭弹窗: {sel}"); time.sleep(1)
+      js = r"""
+      (function() {
+          var btns = document.querySelectorAll('button');
+>         for (var i = 0; i < btns.length; i++) {
+              var text = btns[i].innerText || '';
+              if (text.indexOf('90') !== -1) {
+                  var disabled = btns[i].disabled || btns[i].getAttribute('aria-disabled') === 'true';
+  
+  def handle_turnstile(sb, max_retries=3):
+      """处理 Cloudflare Turnstile 人机验证 (Pro增强版)"""
+>     for attempt in range(max_retries):
+          try:
+              if sb.find_elements('iframe[src*="cloudflare"]') or sb.find_elements('iframe[src*="turnstile"]'):
+                  log(f"🛡️ 检测到 Cloudflare 人机验证 (第 {attempt+1}/{max_retries} 次尝试)")
+      js = """
+      (function() {
+          var btn = null; var all = document.querySelectorAll('button');
+>         for (var i = 0; i < all.length; i++) { if ((all[i].innerText || '').indexOf('90') !== -1) { btn = all[i]; bre
+ak; } }
+          if (!btn) return null;
+          var st = {cls: btn.className || '', disabledAttr: !!btn.disabled, hasAlpine: false};
+          var root = btn.closest('[x-data]') || btn;
+          try { if (!d && root.__x && root.__x.$data) d = root.__x.$data; } catch(e) {}
+          if (d) {
+              st.hasAlpine = true;
+>             for (var k in d) {
+                  try { var v = d[k]; var tv = typeof v;
+                  if ((tv === 'boolean' || tv === 'number' || tv === 'string') && ('' + v).length < 60) st[k] = v;
+                  } catch(e) {}
+      js = r"""
+      (function() {
+          var vids = document.querySelectorAll('video');
+>         for (var i = 0; i < vids.length; i++) { if (vids[i].offsetParent !== null) return 'video'; }
+          var ifs = document.querySelectorAll('iframe');
+>         for (var j = 0; j < ifs.length; j++) {
+              var s = ((ifs[j].src || "") + " " + (ifs[j].id || "") + " " + (ifs[j].name || ""));
+              if (/ads|doubleclick|reward/i.test(s) && ifs[j].offsetParent !== null) return 'iframe';
+          }
+          if ad_elapsed > 20:
+              sb.execute_script("""
+              var els = document.querySelectorAll('[aria-label="Close"], [class*="modal"] button');
+>             for (var i = 0; i < els.length; i++) { if(els[i].offsetParent !== null) { els[i].click(); break; } }
+              """)
+              log("尝试关闭广告控制元素")
+              return True
+  # Pro v7: 成功验证 + 页面恢复 + 广告卡死检测
+  # ================================================================
+  
+> def verify_extend_success(sb, before_secs):
+      """
+      Gaming4Free Pro续期验证 - 多重判断
+      1. 倒计时增加
+      log("🔍 Pro模式: 开始确认续期结果")
+      start = time.time()
+  
+>     while time.time() - start < VERIFY_TIMEOUT:
+          try:
+              text, secs = get_remaining_time(sb)
+>             log(f"⏱️ Pro检测: {text} ({secs-before_secs:+d}秒)")
+  
+              # 时间增加达到阈值
+>             if secs >= before_secs + SUCCESS_ADD_SECONDS:
+                  screenshot(sb, "success")
+                  log(f"🎉 Pro确认成功: {text}")
+                  return True, text
+      """页面恢复"""
+      log("♻️ Pro恢复模式启动")
+      try:
+>         screenshot(sb, "before-recover")
+          sb.refresh()
+          time.sleep(8)
+  
+          calls = sb.execute_script("(function(){ return window.__livewire_calls || []; })()")
+          if not calls: return None
+  
+>         for item in calls:
+              text = str(item)
+  
+              # 找 method 数组
+              m = re.findall(r'"methods"\s*:\s*\[\s*"([^"]+)"', text)
+              if m:
+>                 for meth in m:
+                      if meth not in POLLING_METHODS: return meth
+          return None
+      except Exception: return None
+                          return 'called-via-find';
+                      }
+                      let comps=Livewire.all();
+>                     for(let c of comps){
+                          if(c.id==='{component_id_placeholder}'){
+                              c.call('{method_placeholder}');
+                              return 'called-via-all';
+                  }
+                  return 'no-livewire';
+              }})();
+>         """.format(component_id_placeholder=component_id, method_placeholder=method)
+          res = sb.execute_script(js_script)
+          log(f"🎯 直接调用结果: {res}")
+          return True
+          "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0
+.0 Safari/537.36"
+      ]
+  
+>     for server_name, server_url in ACCOUNTS:
+          log(f"\n========== 开始处理服务器账号: {server_name} ==========")
+  
+          account_finished = False
+>         for browser_attempt in range(max_browser_retries):
+              sb = None
+              try:
+                  log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{max_browser_retries} 次尝试)...")
+                          try:
+                              # 尝试解析多个 Cookie (格式: name1=val1; name2=val2)
+                              cookies = GF_COOKIE.split(';')
+>                             for c in cookies:
+                                  c = c.strip()
+                                  if '=' in c:
+                                      name, value = c.split('=', 1)
+                      setup_livewire_listener(sb)
+  
+                      log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
+>                     for _ in range(10):
+                          has_lw = sb.execute_script("(function(){ return !!window.Livewire; })()")
+                          if has_lw: break
+                          time.sleep(1)
+                      # 等待续期按钮出现
+                      log("⏳ 等待页面组件完全加载 (最多15秒)...")
+                      try:
+>                         sb.wait_for_element('button.rt-btn-free', timeout=15)
+                      except:
+                          log("⚠️ 超时未检测到续期按钮，尝试向下滚动触发懒加载...")
+                          sb.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                          sb.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                          time.sleep(2)
+  
+>                     screenshot(sb, "before-login")
+  
+                      # 获取当前时间
+>                     before_text, before_secs = get_remaining_time(sb)
+>                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
+                      # 诊断：获取页面完整文本
+                      page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()
+")
+                      time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
+                          log(f"🔍 页面中发现的时间: {time_matches[:3]}")
+  
+                      # 检查是否需要续期
+>                     if before_secs > TARGET_SECONDS:
+>                         log(f"✅ 剩余时间充足 ({before_text} > 48h)，跳过续期")
+>                         send_tg("✅ 时间充足", server_name, before_text)
+                          account_finished = True
+                          break
+  
+                      # 检查按钮冷却
+                      cooldown_info = check_button_cooldown(sb)
+>                     if cooldown_info and cooldown_info.get('cooldown'):
+                          rem = cooldown_info.get('remaining', '?')
+                          log(f"⏳ 续期按钮处于冷却中，剩余 {rem} 秒，跳过此轮")
+>                         send_tg(f"⏳ 冷却中 ({rem}s)", server_name, before_text)
+                          account_finished = True
+                          break
+  
+                                      if (!window.Livewire) return 'no-lw';
+                                      var comps = window.Livewire.all();
+                                      var targetComp = null;
+>                                     for (var c = 0; c < comps.length; c++) {{
+                                          if (comps[c].id === '{component_id}') {{
+                                              targetComp = comps[c];
+                                              break;
+                              lw_result = sb.execute_script("""
+                                  if (!window.Livewire) return 'no-lw';
+                                  var comps = window.Livewire.all();
+>                                 for (var c = 0; c < comps.length; c++) {
+                                      try {
+                                          comps[c].call('extend');
+                                          return 'called-generic-' + c;
+                                  var btn = arguments[0];
+                                  btn.style.pointerEvents = 'auto';
+                                  btn.removeAttribute('disabled');
+>                                 ['mousedown','mouseup','click'].forEach(function(type){
+                                      btn.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window}
+));
+                                  });
+                                  return 'events-dispatched';
+                              log("📍 策略3: 纯 JS .click() 兜底...")
+                              js_result = sb.execute_script("""
+                                  var btns = document.querySelectorAll('button');
+>                                 for (var i = 0; i < btns.length; i++) {
+                                      if ((btns[i].textContent || '').indexOf('90') !== -1) {
+                                          btns[i].scrollIntoView({block: 'center'});
+                                          btns[i].removeAttribute('disabled');
+                          time.sleep(10)
+                          js_result = sb.execute_script("""
+                          let btns=document.querySelectorAll('button');
+>                         for(let b of btns){
+                              if(b.innerText.includes('90')){
+                                  b.scrollIntoView({block:'center'});
+                                  b.click();
+                      if not click_done:
+                          log("❌ 所有点击策略均失败")
+                          screenshot(sb, "点击全部失败")
+>                         send_tg("❌ 无法点击续期按钮", server_name, before_text)
+                          continue
+  
+                      # === Pro v10 增强: 实时监控页面响应与验证码 ===
+  
+                      responded = False
+                      turnstile_handled_count = 0
+>                     for wi in range(20):
+                          time.sleep(1)
+  
+                          # 1. 优先检查并处理 Turnstile
+                          match_new = re.search(r'(\d+:){2}\d+', page_after)
+                          if match_new:
+                              new_secs = parse_countdown_seconds(match_new.group(0))
+>                             if new_secs > before_secs + 30:
+                                  log(f"✅ 页面已响应！新时间: {match_new.group(0)}")
+                                  responded = True
+                                  break
+                              """)
+  
+                      # === 进入广告观看流程 ===
+>                     live_text, res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
+  
+                      # === Pro 最终确认 ===
+>                     ok, verify_text = verify_extend_success(sb, before_secs)
+  
+                      if ok:
+                          log(f"✅ Pro续期成功: {verify_text}")
+                      break
+  
+              except Exception as e:
+>                 log(f"❌ 服务器 '{server_name}' 执行过程中发生异常: {e}\n{traceback.format_exc()}")
+                  try:
+                      screenshot(sb, "错误截图")
+                  except: pass
+                  break
+  
+  
+> def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
+      """等待广告流程完成，监控续期结果 (Pro增强版)"""
+      result = {'extend_seen': False, 'reward_ready': False, 'ad_seen': False, 'live_text': '', 'live_secs': 0}
+      log(f"🎬 进入广告观看流程 (最长 {max_wait}秒, 期间不刷新页面)...")
+              (function() {
+                  var ifs = document.querySelectorAll('iframe');
+                  var info = [];
+>                 for (var i = 0; i < ifs.length; i++) {
+                      info.push({
+                          index: i,
+                          src: ifs[i].src || '(no src)',
+              (function() {
+                  var all = document.querySelectorAll('*');
+                  var ads = [];
+>                 for (var i = 0; i < all.length; i++) {
+                      var txt = (all[i].textContent || '').toLowerCase();
+                      if ((txt.indexOf('ad') !== -1 || txt.indexOf('watching') !== -1) && all[i].offsetParent !== null)
+ {
+                          ads.push({
+      alpine_logged = 0
+      ad_first_seen = None
+  
+>     while time.time() - t0 < max_wait:
+          elapsed = time.time() - t0
+  
+          # === Pro广告卡死检测 ===
+              ) or []
+          except Exception as e: log(f"⚠️ 获取 Livewire 调用失败: {e}"); calls = []
+          real_methods = []
+>         for c in calls:
+>             for m in (c.get('methods') or []):
+                  if m not in POLLING_METHODS and m not in real_methods: real_methods.append(m)
+          if real_methods:
+              log(f"✅ 捕获到真实的 Livewire 续期请求: method={real_methods}")
+              screenshot(sb, "extend-call")
+              time.sleep(3)
+              lt, ls = get_remaining_time(sb)
+>             if ls > before_secs + 60:
+                  log(f"🎉 页面已自动刷新剩余时间: {lt}")
+                  result['live_text'], result['live_secs'] = lt, ls
+                  break
+  
+              # 【关键修复】只需等待冷却结束，无需二次点击
+              # 系统会在冷却完成后自动续期
+>             for ci in range(300):  # 最多等 5 分钟 (300 * 10秒)
+                  cooldown_info = check_button_cooldown(sb)
+>                 if cooldown_info and cooldown_info.get('cooldown'):
+                      remaining = cooldown_info.get('remaining', '?')
+                      log(f"   ⏳ 按钮冷却中，剩余 {remaining}秒")
+                      time.sleep(10)
+
+

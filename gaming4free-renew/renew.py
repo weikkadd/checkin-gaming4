@@ -100,23 +100,76 @@ def parse_countdown_seconds(text):
     return total
 
 def get_remaining_time(sb):
-    """获取页面显示的剩余时间文本和秒数"""
+    """获取页面显示的剩余时间文本和秒数 - 精确匹配到期时间"""
     try:
-        selectors = ['[class*="timer"]', '[class*="remaining"]', '[class*="countdown"]', '#sd-timer']
-        for sel in selectors:
+        page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
+        if not page_text:
+            return "", 0
+        
+        # === 策略1: 查找包含 expire/remaining/end 关键词附近的时间 ===
+        lines = page_text.split('\n')
+        for i, line in enumerate(lines):
+            lower_line = line.lower().strip()
+            if any(kw in lower_line for kw in ['expire', 'remaining', 'ends', 'due', '到期', '剩余']):
+                time_match = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
+                if time_match:
+                    t = time_match.group(1)
+                    s = parse_countdown_seconds(t)
+                    if s > 0: return t, s
+                hms_match = re.search(r'(\d+\s*h\s*\d+\s*m)', line, re.I)
+                if hms_match:
+                    t = hms_match.group(1).strip()
+                    s = parse_countdown_seconds(t)
+                    if s > 0: return t, s
+                for j in range(max(0, i-1), min(len(lines), i+3)):
+                    tm = re.search(r'(\d{1,2}:\d{2}:\d{2})', lines[j])
+                    if tm:
+                        t = tm.group(1)
+                        s = parse_countdown_seconds(t)
+                        if s > 0: return t, s
+                    hm = re.search(r'(\d+\s*h\s*\d+\s*m)', lines[j], re.I)
+                    if hm:
+                        t = hm.group(1).strip()
+                        s = parse_countdown_seconds(t)
+                        if s > 0: return t, s
+        
+        # === 策略2: 使用 CSS 选择器查找明确的到期时间元素 ===
+        css_selectors = [
+            '[class*="expire"]',
+            '[class*="remaining"]',
+            '[class*="countdown"]',
+            '[data-testid*="expire"]',
+            '[data-testid*="remaining"]',
+            '[data-testid*="timer"]',
+            '#sd-timer',
+        ]
+        for sel in css_selectors:
             try:
-                text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; }})()")
-                if text and len(text) < 30:
+                text = sb.execute_script(f"(function(){ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; })()")
+                if text and len(text) < 50:
                     secs = parse_countdown_seconds(text)
                     if secs > 0: return text, secs
-            except Exception as e: log(f"⚠️ 获取剩余时间 (选择器: {sel}) 失败: {e}")
-        page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
-        if page_text:
-            match = re.search(r'(\d{1,2}:\d{2}:\d{2})', page_text)
-            if match: return match.group(1), parse_countdown_seconds(match.group(1))
-            match = re.search(r'(\d+h\s*\d+m)', page_text, re.I)
-            if match: return match.group(1), parse_countdown_seconds(match.group(1))
-    except Exception as e: log(f"⚠️ 获取剩余时间失败: {e}")
+            except:
+                pass
+        
+        # === 策略3: 匹配所有 Xh Ym 格式的时间，排除 uptime 上下文 ===
+        all_hm_matches = re.findall(r'(\d+\s*h\s*\d+\s*m)', page_text, re.I)
+        for m in all_hm_matches:
+            t = m.strip()
+            s = parse_countdown_seconds(t)
+            if s > 0 and s < 86400 * 365:
+                idx = page_text.find(t)
+                context = page_text[max(0,idx-30):idx+30].lower()
+                if 'uptime' not in context and 'up time' not in context:
+                    return t, s
+        
+        # === 策略4: 回退到第一个 HH:MM:SS 格式 ===
+        match = re.search(r'(\d{1,2}:\d{2}:\d{2})', page_text)
+        if match:
+            return match.group(1), parse_countdown_seconds(match.group(1))
+        
+    except Exception as e:
+        log(f"⚠️ 获取剩余时间失败: {e}")
     return "", 0
 
 def close_modals(sb):
@@ -125,13 +178,55 @@ def close_modals(sb):
         sels = ['button:contains("Maybe later")', '.modal-close', '[aria-label="Close"]']
         for sel in sels:
             try:
-                if sb.execute_script(f"(function(){{ return !!document.querySelector('{sel}'); }})()"):
+                if sb.execute_script(f"(function(){ return !!document.querySelector('{sel}'); })()"):
                     sb.click(sel); log(f"🛡️ 已关闭弹窗: {sel}"); time.sleep(1)
             except Exception as e: log(f"⚠️ 关闭弹窗 ({sel}) 失败: {e}")
     except Exception as e: log(f"⚠️ 关闭弹窗总失败: {e}")
 
 def check_button_cooldown(sb):
     """检查续期按钮是否处于冷却状态"""
+    # === 策略1: 检查页面上的 "expires XX:XX" 冷却文本 ===
+    try:
+        page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
+        if page_text:
+            exp_match = re.search(r'expires\s+(\d+\S+)', page_text, re.I)
+            if exp_match:
+                exp_text = exp_match.group(0).strip()
+                # 匹配 HH:MM 格式 (如 "expires 20:00" 表示 20分钟)
+                hm_match = re.search(r'(\d+):(\d+)', exp_text)
+                if hm_match:
+                    hours = int(hm_match.group(1))
+                    mins = int(hm_match.group(2))
+                    remaining_sec = hours * 3600 + mins * 60
+                    log(f"⏳ 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒 = {hours}h{mins}m)")
+                    return {'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}
+                # 匹配纯数字格式 (如 "expires 5m", "expires 2h")
+                num_match = re.search(r'(\d+)', exp_text)
+                if num_match:
+                    val = int(num_match.group(1))
+                    if 'd' in exp_text.lower():
+                        remaining_sec = val * 86400
+                    elif 'h' in exp_text.lower():
+                        remaining_sec = val * 3600
+                    elif 'm' in exp_text.lower():
+                        remaining_sec = val * 60
+                    else:
+                        remaining_sec = val
+                    log(f"⏳ 检测到续费冷却: {exp_text} (剩余 {remaining_sec}秒)")
+                    return {'cooldown': True, 'remaining': remaining_sec, 'text': exp_text}
+            # 匹配 "XX:XX cd" 格式 (如 "04:56 cd" 表示按钮冷却倒计时)
+            cd_match = re.search(r'(\d+):(\d+)\s+cd', page_text, re.I)
+            if cd_match:
+                mins = int(cd_match.group(1))
+                secs = int(cd_match.group(2))
+                remaining_sec = mins * 60 + secs
+                cd_text = cd_match.group(0).strip()
+                log(f"⏳ 检测到按钮冷却倒计时: {cd_text} (剩余 {remaining_sec}秒)")
+                return {'cooldown': True, 'remaining': remaining_sec, 'text': cd_text}
+    except Exception as e:
+        log(f"⚠️ 检查 expires 冷却失败: {e}")
+    
+    # === 策略2: 检查按钮本身的 disabled 状态 ===
     js = r"""
     (function() {
         var btns = document.querySelectorAll('button');
@@ -151,9 +246,7 @@ def check_button_cooldown(sb):
     })();
     """
     try: return sb.execute_script(js)
-    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return None
-
-def handle_turnstile(sb, max_retries=3):
+    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return Nonedef handle_turnstile(sb, max_retries=3):
     """处理 Cloudflare Turnstile 人机验证 (Pro增强版)"""
     for attempt in range(max_retries):
         try:
@@ -465,12 +558,12 @@ def find_component_id_by_selector(sb, selector):
     """根据选择器寻找 wire:id"""
     try:
         return sb.execute_script(f"""
-            return (function() {{
+            return (function() {
                 let el=document.querySelector(\'{selector}\');
                 if(!el) return null;
                 let comp=el.closest(\'[wire\\\\:id]\');
                 return comp?comp.getAttribute(\'wire:id\'):null;
-            }})();
+            })();
         """)
     except Exception: return None
 
@@ -496,7 +589,7 @@ def call_livewire_directly(sb, component_id, method):
                     }
                 }
                 return 'no-livewire';
-            }})();
+            })();
         """.format(component_id_placeholder=component_id, method_placeholder=method)
         res = sb.execute_script(js_script)
         log(f"🎯 直接调用结果: {res}")
@@ -620,6 +713,11 @@ def main():
                     # 获取当前时间
                     before_text, before_secs = get_remaining_time(sb)
                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
+                    # 诊断：获取页面完整文本
+                    page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
+                    time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
+                    if time_matches:
+                        log(f"🔍 页面中发现的时间: {time_matches[:3]}")
 
                     # 检查是否需要续期
                     if before_secs > TARGET_SECONDS:
@@ -634,8 +732,8 @@ def main():
                         rem = cooldown_info.get('remaining', '?')
                         log(f"⏳ 续期按钮处于冷却中，剩余 {rem} 秒，跳过此轮")
                         send_tg(f"⏳ 冷却中 ({rem}s)", server_name, before_text)
-                        account_finished = True
-                        break
+                        # 冷却中，跳过本次续期，继续外层循环重试
+                        continue
 
                     # 开始续期操作
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
@@ -665,24 +763,24 @@ def main():
                         component_id = find_component_id_by_selector(sb, 'button.rt-btn-free')
                         if component_id:
                             result = sb.execute_script(f"""
-                                (function() {{
+                                (function() {
                                     if (!window.Livewire) return 'no-lw';
                                     var comps = window.Livewire.all();
                                     var targetComp = null;
-                                    for (var c = 0; c < comps.length; c++) {{
-                                        if (comps[c].id === '{component_id}') {{
+                                    for (var c = 0; c < comps.length; c++) {
+                                        if (comps[c].id === '{component_id}') {
                                             targetComp = comps[c];
                                             break;
-                                        }}
-                                    }}
+                                        }
+                                    }
                                     if (!targetComp) return 'no-target-component';
-                                    try {{
+                                    try {
                                         targetComp.call('extend');
                                         return 'called-via-call';
-                                    }} catch(e) {{
+                                    } catch(e) {
                                         return 'call-failed:' + e.message;
-                                    }}
-                                }})();
+                                    }
+                                })();
                             """)
                             log(f"   🎯 Livewire call 结果: {result}")
 
@@ -874,13 +972,13 @@ def main():
                         else:
                             # 通用调用
                             sb.execute_script(f"""
-                                if(window.Livewire){{
+                                if(window.Livewire){
                                     let comps=Livewire.all();
-                                    if(comps.length>0){{
+                                    if(comps.length>0){
                                         comps[0].call("{method}");
                                         return "called";
-                                    }}
-                                }}
+                                    }
+                                }
                                 return "no";
                             """)
 

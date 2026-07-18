@@ -1,0 +1,63 @@
+﻿
+  # ================================================================
+  
+> def verify_extend_success(sb, before_secs):
+      """
+      Gaming4Free Pro续期验证 - 多重判断
+          try:
+              text, secs = get_remaining_time(sb)
+>             log(f"⏱️ Pro检测: {text} ({secs-before_secs:+d}秒)")
+  
+              # 时间增加达到阈值
+>             if secs >= before_secs + SUCCESS_ADD_SECONDS:
+                  screenshot(sb, "success")
+                  log(f"🎉 Pro确认成功: {text}")
+  
+                      # 获取当前时间
+>                     before_text, before_secs = get_remaining_time(sb)
+>                     log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
+                      # 诊断：获取页面完整文本
+                      page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()
+")
+  
+                      # 检查是否需要续期
+>                     if before_secs > TARGET_SECONDS:
+>                         log(f"✅ 剩余时间充足 ({before_text} > 48h)，跳过续期")
+>                         send_tg("✅ 时间充足", server_name, before_text)
+                          account_finished = True
+                          break
+                          rem = cooldown_info.get('remaining', '?')
+                          log(f"⏳ 续期按钮处于冷却中，剩余 {rem} 秒，跳过此轮")
+>                         send_tg(f"⏳ 冷却中 ({rem}s)", server_name, before_text)
+                          account_finished = True
+                          break
+                          log("❌ 所有点击策略均失败")
+                          screenshot(sb, "点击全部失败")
+>                         send_tg("❌ 无法点击续期按钮", server_name, before_text)
+                          continue
+  
+                          if match_new:
+                              new_secs = parse_countdown_seconds(match_new.group(0))
+>                             if new_secs > before_secs + 30:
+                                  log(f"✅ 页面已响应！新时间: {match_new.group(0)}")
+                                  responded = True
+  
+                      # === 进入广告观看流程 ===
+>                     live_text, res = wait_ad_flow(sb, before_secs, AD_WAIT_SEC)
+  
+                      # === Pro 最终确认 ===
+>                     ok, verify_text = verify_extend_success(sb, before_secs)
+  
+                      if ok:
+  
+  
+> def wait_ad_flow(sb, before_secs, max_wait=AD_WAIT_SEC):
+      """等待广告流程完成，监控续期结果 (Pro增强版)"""
+      result = {'extend_seen': False, 'reward_ready': False, 'ad_seen': False, 'live_text': '', 'live_secs': 0}
+              time.sleep(3)
+              lt, ls = get_remaining_time(sb)
+>             if ls > before_secs + 60:
+                  log(f"🎉 页面已自动刷新剩余时间: {lt}")
+                  result['live_text'], result['live_secs'] = lt, ls
+
+
