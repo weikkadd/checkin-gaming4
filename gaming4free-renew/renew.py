@@ -431,12 +431,12 @@ def find_component_id_by_selector(sb, selector):
     """根据选择器寻找 wire:id"""
     try:
         return sb.execute_script(f"""
-            return (function() {
-                let el=document.querySelector('{selector}');
+            return (function() {{
+                let el=document.querySelector(\'{selector}\');
                 if(!el) return null;
-                let comp=el.closest('[wire\\\\:id]');
-                return comp?comp.getAttribute('wire:id'):null;
-            })();
+                let comp=el.closest(\'[wire\\\\:id]\');
+                return comp?comp.getAttribute(\'wire:id\'):null;
+            }})();
         """)
     except Exception: return None
 
