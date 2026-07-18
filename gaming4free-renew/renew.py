@@ -113,7 +113,7 @@ def get_remaining_time(sb):
         selectors = ['[class*="timer"]', '[class*="remaining"]', '[class*="countdown"]', '#sd-timer']
         for sel in selectors:
             try:
-                text = sb.execute_script(f"var el=document.querySelector('{sel}'); return el?el.textContent.trim():'';")
+                text = sb.execute_script(f"(function(){{ var el=document.querySelector('{sel}'); return el?el.textContent.trim():''; }})()")
                 if text and len(text) < 30:
                     secs = parse_countdown_seconds(text)
                     if secs > 0: return text, secs
@@ -133,7 +133,7 @@ def close_modals(sb):
         sels = ['button:contains("Maybe later")', '.modal-close', '[aria-label="Close"]']
         for sel in sels:
             try:
-                if sb.execute_script(f"return !!document.querySelector('{sel}');"):
+                if sb.execute_script(f"(function(){{ return !!document.querySelector('{sel}'); }})()"):
                     sb.click(sel); log(f"🛡️ 已关闭弹窗: {sel}"); time.sleep(1)
             except Exception as e: log(f"⚠️ 关闭弹窗 ({sel}) 失败: {e}")
     except Exception as e: log(f"⚠️ 关闭弹窗总失败: {e}")
@@ -298,8 +298,10 @@ def verify_extend_success(sb, before_secs):
 
             # 检查奖励按钮状态
             reward = sb.execute_script("""
-            let t=document.body.innerText;
-            return t.includes('Reward') || t.includes('Watching') || t.includes('Ad');
+            return (function() {
+                let t=document.body.innerText;
+                return t.includes('Reward') || t.includes('Watching') || t.includes('Ad');
+            })();
             """)
             if not reward:
                 log("🎁 广告奖励状态结束")
@@ -429,10 +431,12 @@ def find_component_id_by_selector(sb, selector):
     """根据选择器寻找 wire:id"""
     try:
         return sb.execute_script(f"""
-            let el=document.querySelector('{selector}');
-            if(!el) return null;
-            let comp=el.closest('[wire\\\\:id]');
-            return comp?comp.getAttribute('wire:id'):null;
+            return (function() {
+                let el=document.querySelector('{selector}');
+                if(!el) return null;
+                let comp=el.closest('[wire\\\\:id]');
+                return comp?comp.getAttribute('wire:id'):null;
+            })();
         """)
     except Exception: return None
 
@@ -442,21 +446,23 @@ def call_livewire_directly(sb, component_id, method):
     try:
         log(f"🚀 尝试直接调用 Livewire: component={component_id}, method={method}")
         res = sb.execute_script(f"""
-            if(window.Livewire){{
-                let comp=Livewire.find('{component_id}');
-                if(comp){{
-                    comp.call('{method}');
-                    return 'called-via-find';
-                }}
-                let comps=Livewire.all();
-                for(let c of comps){{
-                    if(c.id==='{component_id}'){{
-                        c.call('{method}');
-                        return 'called-via-all';
+            return (function() {
+                if(window.Livewire){{
+                    let comp=Livewire.find('{component_id}');
+                    if(comp){{
+                        comp.call('{method}');
+                        return 'called-via-find';
+                    }}
+                    let comps=Livewire.all();
+                    for(let c of comps){{
+                        if(c.id==='{component_id}'){{
+                            c.call('{method}');
+                            return 'called-via-all';
+                        }}
                     }}
                 }}
-            }}
-            return 'no-livewire';
+                return 'no-livewire';
+            })();
         """)
         log(f"🎯 直接调用结果: {res}")
         return True
