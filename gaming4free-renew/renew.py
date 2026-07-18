@@ -616,15 +616,15 @@ def main():
                         send_tg("按钮冷却中", server_name, before_text)
                         continue
                     # =============================================
-                    # 🖱️ 点击 +90 分钟续期按钮 (Pro v9 增强版)
+                    # 🖱️ Pro v10: Livewire HTTP API + 深度诊断
                     # =============================================
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
 
                     click_done = False
 
-                    # === Pro v9 关键诊断：找出按钮的真实事件绑定 ===
+                    # === Step 1: 深度诊断 — 找 wire:id + snapshot HTML ===
                     try:
-                        log("🔍 Pro v9: 诊断按钮事件绑定...")
+                        log("🔍 Pro v10: 深度诊断...")
 
                         diag_result = sb.execute_script("""
                             (function() {
@@ -632,44 +632,49 @@ def main():
                                 for (var i = 0; i < btns.length; i++) {
                                     var txt = (btns[i].textContent || '').trim();
                                     if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
-                                        var info = {
-                                            tag: btns[i].tagName,
-                                            className: btns[i].className,
-                                            id: btns[i].id,
-                                            text: txt,
-                                            wireClick: btns[i].getAttribute('wire:click'),
-                                            xOn: btns[i].getAttribute('x-on:click'),
-                                            onClick: btns[i].getAttribute('onclick'),
-                                            dataAction: btns[i].getAttribute('data-action'),
-                                            hasXData: !!btns[i].closest('[x-data]'),
-                                            hasWireId: !!btns[i].closest('[wire:id]'),
-                                            parentTag: btns[i].parentElement ? btns[i].parentElement.tagName : '',
-                                            parentClass: btns[i].parentElement ? btns[i].parentElement.className : ''
-                                        };
-
-                                        // 检查 Alpine.js 绑定
-                                        var root = btns[i].closest('[x-data]');
-                                        if (root) {
-                                            info.alpineData = root.getAttribute('x-data');
-                                            info.alpineListeners = [];
-                                            for (var attr of root.attributes) {
-                                                if (attr.name.startsWith('@') || attr.name.startsWith('x-on:') || attr.name.startsWith('x-init')) {
-                                                    info.alpineListeners.push(attr.name + '=' + attr.value);
-                                                }
-                                            }
+                                        var comp = btns[i];
+                                        while (comp && !comp.getAttribute('wire:id')) {
+                                            comp = comp.parentElement;
                                         }
 
-                                        // 检查 window.Livewire 组件
+                                        var info = {
+                                            found: true, text: txt, className: btns[i].className,
+                                            disabled: btns[i].disabled, rect: btns[i].getBoundingClientRect ? JSON.stringify(btns[i].getBoundingClientRect()) : null,
+                                            parentTag: btns[i].parentElement ? btns[i].parentElement.tagName : '',
+                                            parentCls: btns[i].parentElement ? btns[i].parentElement.className : ''
+                                        };
+
+                                        if (comp) {
+                                            info.wireId = comp.getAttribute('wire:id');
+                                            info.componentAttrs = [];
+                                            for (var attr of comp.attributes) {
+                                                info.componentAttrs.push(attr.name + '=' + attr.value.substring(0,200));
+                                            }
+                                            info.hasSubmitHandler = !!comp.getAttribute('wire:submit');
+                                            info.submitMethod = comp.getAttribute('wire:submit');
+                                        }
+
                                         if (window.Livewire) {
                                             var comps = window.Livewire.all();
-                                            info.livewireComponents = comps.length;
-                                            for (var c = 0; c < Math.min(comps.length, 3); c++) {
+                                            info.totalComponents = comps.length;
+                                            for (var c = 0; c < comps.length; c++) {
                                                 try {
                                                     var snap = comps[c].snapshot;
-                                                    if (snap && snap.html) {
-                                                        if (snap.html.indexOf('extend') !== -1 || snap.html.indexOf('90') !== -1) {
-                                                            info.componentIndex = c;
-                                                            info.hasExtendInComponent = true;
+                                                    if (snap && snap.html && snap.html.indexOf(txt) !== -1) {
+                                                        info.matchingComponentIndex = c;
+                                                        info.matchingComponentId = comps[c].id;
+                                                        if (snap.serverMemo && snap.serverMemo.data) {
+                                                            var memo = snap.serverMemo.data;
+                                                            if (memo.effects) info.effects = JSON.stringify(memo.effects);
+                                                            if (memo.preloadAssets) {
+                                                                for (var p of memo.preloadAssets) {
+                                                                    if (p.url && p.url.indexOf('livewire') !== -1) info.livewireScriptUrl = p.url;
+                                                                }
+                                                            }
+                                                        }
+                                                        var idx = snap.html.indexOf(txt);
+                                                        if (idx !== -1) {
+                                                            info.contextHtml = snap.html.substring(Math.max(0,idx-200), Math.min(snap.html.length, idx+500));
                                                         }
                                                     }
                                                 } catch(e) {}
@@ -683,91 +688,108 @@ def main():
                             })();
                         """)
                         log(f"   🔬 诊断结果: {diag_result}")
-                        screenshot(sb, "button-diagnosis")
+
+                        import json
+                        try:
+                            d = json.loads(diag_result)
+                            if d.get('matchingComponentId'): log(f"   ✅ 匹配组件ID: {d['matchingComponentId']}")
+                            if d.get('wireId'): log(f"   ✅ wire:id: {d['wireId']}")
+                            if d.get('effects'): log(f"   📡 Effects: {d['effects'][:200]}")
+                            if d.get('contextHtml'): log(f"   📄 Context: ...{d['contextHtml']}...")
+                            if d.get('rect'): log(f"   📐 按钮位置: {d['rect']}")
+                        except: pass
+
+                        screenshot(sb, "button-diagnosis-v10")
 
                     except Exception as e:
                         log(f"   ⚠️ 诊断失败: {e}")
 
-                    # --- 策略1: 通过 Alpine.js 数据模型调用方法 ---
+                    # === Step 2: 通过 Livewire HTTP API 调用 extend ===
                     try:
-                        log("📍 策略1: Alpine.js 数据模型操作...")
+                        log("📍 策略1: Livewire HTTP API 直接调用 extend...")
 
-                        alpine_info = sb.execute_script("""
-                            var btn = null;
-                            var allBtns = document.querySelectorAll('button');
-                            for (var i = 0; i < allBtns.length; i++) {
-                                if ((allBtns[i].textContent || '').indexOf('90') !== -1 && allBtns[i].offsetParent !== null) {
-                                    btn = allBtns[i];
+                        component_id = sb.execute_script("""
+                            if (!window.Livewire) return null;
+                            var btns = document.querySelectorAll('button');
+                            var searchText = null;
+                            for (var i = 0; i < btns.length; i++) {
+                                var txt = (btns[i].textContent || '').trim();
+                                if ((txt.includes('+90') || txt.includes('90 min')) && btns[i].offsetParent !== null) {
+                                    searchText = txt;
                                     break;
                                 }
                             }
-                            if (!btn) return JSON.stringify({error: 'no-btn'});
-
-                            var root = btn.closest('[x-data]');
-                            if (!root) return JSON.stringify({error: 'no-root'});
-
-                            var data = null;
-                            try {
-                                if (window.Alpine && Alpine.$data) data = Alpine.$data(root);
-                                else if (root.__x && root.__x.$data) data = root.__x.$data;
-                            } catch(e) {}
-
-                            if (!data) return JSON.stringify({error: 'no-alpine-data'});
-
-                            var methods = [];
-                            var targetMethods = [];
-                            for (var key in data) {
-                                if (typeof data[key] === 'function') {
-                                    methods.push(key);
-                                    var kl = key.toLowerCase();
-                                    if (kl.includes('extend') || kl.includes('renew') || 
-                                        kl.includes('ad') || kl.includes('watch') || kl.includes('claim')) {
-                                        targetMethods.push(key);
+                            if (!searchText) return null;
+                            var comps = window.Livewire.all();
+                            for (var c = 0; c < comps.length; c++) {
+                                try {
+                                    var snap = comps[c].snapshot;
+                                    if (snap && snap.html && snap.html.indexOf(searchText) !== -1) {
+                                        return comps[c].id;
                                     }
-                                }
+                                } catch(e) {}
                             }
-
-                            return JSON.stringify({
-                                found: true,
-                                methods: methods.slice(0, 30),
-                                targetMethods: targetMethods,
-                                stateKeys: Object.keys(data).filter(k => typeof data[k] !== 'function').slice(0, 20)
-                            });
+                            return null;
                         """)
-                        log(f"   🔬 Alpine 信息: {alpine_info}")
 
-                        # 如果有目标方法，直接调用
-                        import json
-                        try:
-                            parsed = json.loads(alpine_info)
-                            if parsed.get('targetMethods'):
-                                method = parsed['targetMethods'][0]
-                                log(f"   🎯 找到目标方法: {method}")
+                        if component_id:
+                            log(f"   ✅ 找到组件ID: {component_id}")
 
-                                call_result = sb.execute_script(f"""
-                                    var root = document.querySelector('[x-data]');
-                                    if (!root) return 'no-root';
-                                    var data = null;
-                                    try {{
-                                        if (window.Alpine && Alpine.$data) data = Alpine.$data(root);
-                                        else if (root.__x && root.__x.$data) data = root.__x.$data;
-                                    }} catch(e) {{}}
-                                    if (data && typeof data.{method} === 'function') {{
-                                        data.{method}();
-                                        return 'called:' + '{method}';
+                            result = sb.execute_script(f"""
+                                (function() {{
+                                    if (!window.Livewire) return 'no-livewire';
+                                    var comps = window.Livewire.all();
+                                    var targetComp = null;
+                                    for (var c = 0; c < comps.length; c++) {{
+                                        if (comps[c].id === '{component_id}') {{
+                                            targetComp = comps[c];
+                                            break;
+                                        }}
                                     }}
-                                    return 'method-not-found';
-                                """)
-                                log(f"   🎯 Alpine 方法调用: {call_result}")
-                                if 'called:' in str(call_result):
-                                    click_done = True
-                        except Exception as je:
-                            log(f"   ⚠️ JSON解析失败: {je}")
+                                    if (!targetComp) return 'no-target-component';
+                                    try {{
+                                        targetComp.call('extend');
+                                        return 'called-via-call';
+                                    }} catch(e) {{
+                                        return 'call-failed:' + e.message;
+                                    }}
+                                }})();
+                            """)
+                            log(f"   🎯 Livewire call 结果: {result}")
+
+                            if 'called' in str(result):
+                                click_done = True
+                                time.sleep(2)
+
+                                reqs = sb.execute_script("return (window.__reqs||[]).length;")
+                                log(f"   📡 Livewire requests captured: {reqs}")
+
+                                if reqs > 0:
+                                    log("   ✅ 确认 Livewire POST 请求已发出！")
+                                    screenshot(sb, "livewire-request-captured")
+                        else:
+                            log("   ⚠️ 未找到匹配的 Livewire 组件，尝试通用方法...")
+                            # Fallback: 遍历所有组件试 extend
+                            lw_result = sb.execute_script("""
+                                if (!window.Livewire) return 'no-lw';
+                                var comps = window.Livewire.all();
+                                for (var c = 0; c < comps.length; c++) {
+                                    try {
+                                        comps[c].call('extend');
+                                        return 'called-generic-' + c;
+                                    } catch(e) {}
+                                }
+                                return 'no-match-any';
+                            """)
+                            log(f"   🎯 通用 Livewire 结果: {lw_result}")
+                            if 'called' in str(lw_result):
+                                click_done = True
+                                time.sleep(2)
 
                     except Exception as e:
                         log(f"   ⚠️ 策略1失败: {e}")
 
-                    # --- 策略2: dispatch livewire:submit 事件 ---
+                    # === Step 3: dispatch livewire:submit 事件 ===
                     if not click_done:
                         try:
                             log("📍 策略2: dispatch livewire:submit 事件...")
@@ -777,13 +799,9 @@ def main():
                                 var btn = arguments[0];
                                 btn.style.pointerEvents = 'auto';
                                 btn.removeAttribute('disabled');
-                                var submitEvent = new CustomEvent('livewire:submit', {
-                                    bubbles: true, cancelable: true, detail: {}
-                                });
                                 ['mousedown','mouseup','click'].forEach(function(type){
                                     btn.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window}));
                                 });
-                                btn.dispatchEvent(submitEvent);
                                 return 'events-dispatched';
                             """, elem)
                             log(f"   🎯 事件分发结果: {result}")
@@ -792,7 +810,7 @@ def main():
                         except Exception as e:
                             log(f"   ⚠️ 策略2失败: {e}")
 
-                    # --- 策略3: 纯 JS .click() 兜底 ---
+                    # === Step 4: 纯 JS .click() 兜底 ===
                     if not click_done:
                         try:
                             log("📍 策略3: 纯 JS .click() 兜底...")
@@ -815,15 +833,13 @@ def main():
                         except Exception as e:
                             log(f"⚠️ 策略3失败: {e}")
 
-                    # --- Pro v9 二次点击重试 ---
+                    # === Pro v10 二次点击重试 ===
                     if not click_done:
                         log("⚠️ 第一次点击失败，Pro重新尝试")
                         screenshot(sb, "click-failed")
                         time.sleep(5)
                         sb.refresh()
                         time.sleep(10)
-                        click_done = False
-
                         js_result = sb.execute_script("""
                         let btns=document.querySelectorAll('button');
                         for(let b of btns){
@@ -843,8 +859,6 @@ def main():
                         log("❌ 所有点击策略均失败")
                         screenshot(sb, "点击全部失败")
                         send_tg("❌ 无法点击续期按钮", server_name, before_text)
-                        continue
-
                         continue
 
                     # 等待页面响应
