@@ -162,15 +162,24 @@ def check_button_cooldown(sb):
 def handle_turnstile(sb, max_retries=5):
     """处理 Cloudflare Turnstile 人机验证 (GitHub Actions 加强版)
 
+    核心难点: Cloudflare Turnstile 检查 event.isTrusted
+      - dispatchEvent(new MouseEvent) → isTrusted=false → 被忽略
+      - CDP Input.dispatchMouseEvent → isTrusted=false → 被忽略 (CDP 合成事件)
+      - xdotool 系统级鼠标 → isTrusted=true → 接受 (唯一可行方案)
+      - SeleniumBase uc_gui_click_captcha 内部用的就是 xdotool
+
     多策略依次尝试:
-      1. uc_gui_click_captcha (SeleniumBase 内置, 依赖 xdotool)
-      2. CDP Input.dispatchMouseEvent 直接发点击坐标 (不依赖 xdotool)
-      3. iframe 内 checkbox 点击
-      4. 等待自动通过 (Turnstile 有时无交互通过)
+      1. uc_gui_click_captcha (SeleniumBase 内置, xdotool)
+      2. 直接调用 xdotool 点击 Turnstile iframe 复选框坐标
+      3. iframe 内 checkbox JS 点击 (兜底, 可能无效)
+      4. 等待自动通过 (无交互模式)
     """
+    import subprocess
+
     for attempt in range(max_retries):
         try:
             cf_iframes = sb.find_elements('iframe[src*="cloudflare"]') or \
+                         sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
                          sb.find_elements('iframe[src*="turnstile"]') or \
                          sb.find_elements('iframe[title*="challenge"]') or \
                          sb.find_elements('iframe[title*="Cloudflare"]')
@@ -181,53 +190,61 @@ def handle_turnstile(sb, max_retries=5):
             if attempt == 0:
                 screenshot(sb, "turnstile-start")
 
-            # 策略 1: SeleniumBase uc_gui_click_captcha
+            # 获取 Turnstile iframe 在屏幕上的绝对坐标 (含 Xvfb 偏移)
+            iframe = cf_iframes[0]
+            rect = sb.execute_script(
+                "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
+                "return {x: r.x, y: r.y, w: r.width, h: r.height}; })();",
+                iframe
+            )
+
+            if not rect or rect.get('w', 0) <= 0:
+                log(f"⚠️ [尝试 {attempt+1}] 无法获取 iframe 坐标")
+                time.sleep(2)
+                continue
+
+            # Turnstile 复选框位置: iframe 左侧约 30px, 垂直居中
+            click_x = int(rect['x'] + 30)
+            click_y = int(rect['y'] + rect['h'] / 2)
+            log(f"🎯 Turnstile iframe rect={rect}, 复选框坐标 ({click_x}, {click_y})")
+
+            # 策略 1: SeleniumBase uc_gui_click_captcha (内部用 xdotool)
             try:
                 sb.uc_gui_click_captcha()
                 log(f"✅ [尝试 {attempt+1}] uc_gui_click_captcha 已执行")
                 time.sleep(4)
-                if not sb.find_elements('iframe[src*="cloudflare"]'):
-                    log("🎉 Turnstile 已消失 (策略1 成功)")
+                if not sb.find_elements('iframe[src*="cloudflare"]') and \
+                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
+                    log("🎉 Turnstile 已消失 (策略1 uc_gui_click_captcha 成功)")
                     return True
+                log(f"⚠️ [尝试 {attempt+1}] uc_gui_click_captcha 后 Turnstile 仍在")
             except Exception as e:
                 log(f"⚠️ [尝试 {attempt+1}] uc_gui_click_captcha 失败: {e}")
 
-            # 策略 2: CDP Input.dispatchMouseEvent 直接点击 Turnstile iframe
+            # 策略 2: 直接调用 xdotool 系统级点击 (绕过 isTrusted 限制)
             try:
-                iframe = cf_iframes[0]
-                rect = sb.execute_script(
-                    "(function() { var el = arguments[0]; var r = el.getBoundingClientRect(); "
-                    "return {x: r.x, y: r.y, w: r.width, h: r.height}; })();",
-                    iframe
+                # 先移动鼠标到目标位置 (mousemove)
+                subprocess.run(
+                    ["xdotool", "mousemove", str(click_x), str(click_y)],
+                    check=False, timeout=5, capture_output=True
                 )
-                if rect:
-                    # Turnstile 复选框通常在 iframe 左侧 30px 位置
-                    click_x = int(rect['x'] + 30)
-                    click_y = int(rect['y'] + rect['h'] / 2)
-                    log(f"🎯 CDP 点击坐标: ({click_x}, {click_y}) iframe rect={rect}")
-
-                    sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                        "type": "mouseMoved", "x": click_x, "y": click_y,
-                    })
-                    time.sleep(0.3)
-                    sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                        "type": "mousePressed", "x": click_x, "y": click_y,
-                        "button": "left", "clickCount": 1,
-                    })
-                    time.sleep(0.1)
-                    sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                        "type": "mouseReleased", "x": click_x, "y": click_y,
-                        "button": "left", "clickCount": 1,
-                    })
-                    log(f"✅ [尝试 {attempt+1}] CDP 点击已发送")
-                    time.sleep(5)
-                    if not sb.find_elements('iframe[src*="cloudflare"]'):
-                        log("🎉 Turnstile 已消失 (策略2 成功)")
-                        return True
+                time.sleep(0.3)
+                # 鼠标按下 + 抬起 (真实系统事件, isTrusted=true)
+                subprocess.run(
+                    ["xdotool", "click", "1"],
+                    check=False, timeout=5, capture_output=True
+                )
+                log(f"✅ [尝试 {attempt+1}] xdotool 系统点击 ({click_x}, {click_y})")
+                time.sleep(5)
+                if not sb.find_elements('iframe[src*="cloudflare"]') and \
+                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
+                    log("🎉 Turnstile 已消失 (策略2 xdotool 成功)")
+                    return True
+                log(f"⚠️ [尝试 {attempt+1}] xdotool 点击后 Turnstile 仍在")
             except Exception as e:
-                log(f"⚠️ [尝试 {attempt+1}] CDP 点击失败: {e}")
+                log(f"⚠️ [尝试 {attempt+1}] xdotool 点击失败: {e}")
 
-            # 策略 3: iframe 内 checkbox 点击
+            # 策略 3: iframe 内 checkbox JS 点击 (兜底, 可能无效)
             try:
                 sb.switch_to.frame(iframe)
                 time.sleep(0.5)
@@ -237,8 +254,9 @@ def handle_turnstile(sb, max_retries=5):
                     log(f"✅ [尝试 {attempt+1}] iframe 内 checkbox 点击")
                     time.sleep(4)
                 sb.switch_to.default_content()
-                if not sb.find_elements('iframe[src*="cloudflare"]'):
-                    log("🎉 Turnstile 已消失 (策略3 成功)")
+                if not sb.find_elements('iframe[src*="cloudflare"]') and \
+                   not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
+                    log("🎉 Turnstile 已消失 (策略3 iframe 内点击 成功)")
                     return True
             except Exception as e:
                 log(f"⚠️ [尝试 {attempt+1}] iframe 内点击失败: {e}")
@@ -247,9 +265,10 @@ def handle_turnstile(sb, max_retries=5):
                 except:
                     pass
 
-            # 策略 4: 等待自动通过
+            # 策略 4: 等待自动通过 (Turnstile 有时无交互通过)
             time.sleep(3)
-            if not sb.find_elements('iframe[src*="cloudflare"]'):
+            if not sb.find_elements('iframe[src*="cloudflare"]') and \
+               not sb.find_elements('iframe[src*="challenges.cloudflare.com"]'):
                 log("🎉 Turnstile 已消失 (自动通过)")
                 return True
 
@@ -978,13 +997,14 @@ def main():
                                 turnstile_handled_count += 1
                                 continue
                             else:
-                                # 已经调用过 handle_turnstile 但仍未通过, 每秒再尝试一次 CDP 点击
+                                # 已经调用过 handle_turnstile 但仍未通过, 每秒再用 xdotool 系统点击
                                 if turnstile_handled_count % 3 == 0:
-                                    log(f"🛡️ [第 {wi+1} 秒] Turnstile 仍在, 再次尝试 CDP 点击 (已处理 {turnstile_handled_count} 次)...")
+                                    log(f"🛡️ [第 {wi+1} 秒] Turnstile 仍在, 再次 xdotool 点击 (已处理 {turnstile_handled_count} 次)...")
                                     screenshot(sb, f"turnstile-detected-{turnstile_handled_count}")
 
-                                # 直接 CDP 点击 Turnstile iframe 中心 (不依赖 handle_turnstile 函数)
+                                # 直接用 xdotool 系统点击 (CDP isTrusted=false 无效)
                                 try:
+                                    import subprocess
                                     cf_iframes = sb.find_elements('iframe[src*="challenges.cloudflare.com"]') or \
                                                  sb.find_elements('iframe[src*="cloudflare"]')
                                     if cf_iframes:
@@ -998,22 +1018,18 @@ def main():
                                             # 点击 checkbox 区域 (iframe 左侧 30px)
                                             click_x = int(rect['x'] + 30)
                                             click_y = int(rect['y'] + rect['h'] / 2)
-                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                                                "type": "mouseMoved", "x": click_x, "y": click_y,
-                                            })
+                                            subprocess.run(
+                                                ["xdotool", "mousemove", str(click_x), str(click_y)],
+                                                check=False, timeout=5, capture_output=True
+                                            )
                                             time.sleep(0.2)
-                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                                                "type": "mousePressed", "x": click_x, "y": click_y,
-                                                "button": "left", "clickCount": 1,
-                                            })
-                                            time.sleep(0.1)
-                                            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                                                "type": "mouseReleased", "x": click_x, "y": click_y,
-                                                "button": "left", "clickCount": 1,
-                                            })
+                                            subprocess.run(
+                                                ["xdotool", "click", "1"],
+                                                check=False, timeout=5, capture_output=True
+                                            )
                                 except Exception as e:
                                     if turnstile_handled_count % 5 == 0:
-                                        log(f"⚠️ CDP 点击异常: {e}")
+                                        log(f"⚠️ xdotool 点击异常: {e}")
 
                             turnstile_handled_count += 1
                             continue
