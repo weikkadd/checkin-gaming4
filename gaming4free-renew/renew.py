@@ -713,9 +713,17 @@ def main():
 
                     screenshot(sb, "before-login")
 
-                    # 获取当前时间
-                    before_text, before_secs = get_remaining_time(sb)
-                    log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
+                    # 获取当前时间 - 等待页面完全渲染
+                    log("⏳ 等待页面完全渲染以获取初始时间...")
+                    for _wait in range(15):
+                        text, secs = get_remaining_time(sb)
+                        if secs > 0:
+                            before_text, before_secs = text, secs
+                            log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒)")
+                            break
+                    else:
+                        before_text, before_secs = "", 0
+                        log(f"⏱️ 续期前剩余时长: {before_text} ({before_secs}秒) - 页面未完全渲染")
                     # 诊断：获取页面完整文本
                     page_text = sb.execute_script("(function(){ return document.body?document.body.innerText:''; })()")
                     if page_text:
@@ -822,26 +830,34 @@ def main():
 
                     # === Step 3: dispatch livewire:submit 事件 ===
                     if not click_done:
-                        try:
-                            log("📍 策略2: dispatch livewire:submit 事件...")
-                            elem = sb.find_element(By.CSS_SELECTOR, 'button.rt-btn-free', timeout=5)
-                            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
-                            result = sb.execute_script("""
-                                var btn = arguments[0];
-                                btn.style.pointerEvents = 'auto';
-                                btn.removeAttribute('disabled');
-                                ['mousedown','mouseup','click'].forEach(function(type){
-                                    btn.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window}));
-                                });
-                                return 'events-dispatched';
-                            """, elem)
-                            log(f"   🎯 事件分发结果: {result}")
-                            click_done = True
-                            time.sleep(1)
-                        except Exception as e:
-                            log(f"   ⚠️ 策略2失败: {e}")
-
-                    # === Step 4: 纯 JS .click() 兜底 ===
+        try:
+            log("📍 策略2: 直接通过 Livewire API 调用 extend...")
+            # 找到所有 Livewire 组件
+            result = sb.execute_script("""
+                (function() {
+                    if (!window.Livewire) return 'no-lw';
+                    var comps = window.Livewire.all();
+                    var results = [];
+                    for (var i = 0; i < comps.length; i++) {
+                        try {
+                            comps[i].call('extend');
+                            results.push('called:' + comps[i].id);
+                        } catch(e) {
+                            results.push('failed:' + e.message);
+                        }
+                    }
+                    return JSON.stringify(results);
+                })();
+            """)
+            log(f"   🎯 Livewire extend 调用结果: {result}")
+            if 'called' in str(result):
+                click_done = True
+                time.sleep(2)
+                # 检查是否有 Livewire 请求发出
+                reqs = sb.execute_script("return (window.__reqs || []).length;")
+                log(f"   📡 Livewire requests captured: {reqs}")
+        except Exception as e:
+            log(f"   ⚠️ 策略2失败: {e}")# === Step 4: 纯 JS .click() 兜底 ===
                     if not click_done:
                         try:
                             log("📍 策略3: 纯 JS .click() 兜底...")
