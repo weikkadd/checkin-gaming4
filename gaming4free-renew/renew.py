@@ -167,7 +167,7 @@ def check_button_cooldown(sb):
                 log(f"⏳ 检测到按钮冷却倒计时: {cd_text} (剩余 {remaining_sec}秒)")
                 return {{'cooldown': True, 'remaining': remaining_sec, 'text': cd_text}}
     except Exception as e:
-        log(f"⚠️ 检查 expires 冷却失败: {{e}}")
+        log(f"⚠️ 检查 expires 冷却失败: {e}")
     
     # === 策略2: 检查按钮本身的 disabled 状态 ===
     js = """
@@ -189,7 +189,7 @@ def check_button_cooldown(sb):
     }})();
     """
     try: return sb.execute_script(js)
-    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {{e}}"); return None
+    except Exception as e: log(f"⚠️ 检查按钮冷却失败: {e}"); return None
 
 
 def handle_turnstile(sb, max_retries=3):
