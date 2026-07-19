@@ -91,25 +91,16 @@ jobs:
           echo "📝 生成 TUIC 配置..."
           cat <<EOF > tuic_config.json
           {
-              "relay": {
-                  "server": {
-                      "address": "185.156.53.135",
-                      "port": 26689,
-                      "uuid": "abe6bc0c-e62c-4f1c-981f-7d790576c2fa",
-                      "password": "eishare2025",
-                      "congestion_control": "bbr",
-                      "alpn": ["h3"],
-                      "sni": "www.bing.com",
-                      "allow_insecure": true
-                  }
-              },
-              "local": {
-                  "server": {
-                      "address": "127.0.0.1",
-                      "port": 1080
-                  },
-                  "protocol": "socks5"
-              }
+              "server": "185.156.53.135:26689",
+              "uuid": "abe6bc0c-e62c-4f1c-981f-7d790576c2fa",
+              "password": "eishare2025",
+              "local_addr": "127.0.0.1:1080",
+              "alpn": ["h3"],
+              "sni": "www.bing.com",
+              "congestion_control": "bbr",
+              "udp_relay_mode": "native",
+              "allow_insecure": true,
+              "reduce_rtt": true
           }
           EOF
           
