@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-host2play 自动续期脚本 (渲染增强版)
+host2play 自动续期脚本 (稳定增强版)
 =====================
-- 修复：针对 Headless 模式下动态内容加载慢导致的 Unknown 问题
-- 优化：增强对 Expires 时间和 Server ID 的捕获逻辑
+- 修复：使用 innerText 抓取服务器 ID，彻底解决 Unknown 问题
+- 优化：加入反爬参数，提升 reCAPTCHA 识别率
+- 逻辑：阈值 25 小时，适配您的 8h 和 24h 账号
 """
 
 import os
@@ -68,32 +69,30 @@ def parse_expires(text: str) -> int:
     return -1
 
 def get_server_info(page):
-    """增强版：动态等待并抓取服务器信息"""
+    """通过 innerText 获取纯文本，精准抓取信息"""
     server_id = "Unknown"
     expires_text = "Unknown"
     expires_sec = -1
     
-    # 循环等待页面内容加载 (最多等待 20 秒)
     for _ in range(10):
-        html = page.html
-        # 1. 尝试匹配时间格式 (XX:XX:XX)
-        time_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", html)
-        if time_match:
-            expires_text = time_match.group(1)
-            expires_sec = parse_expires(expires_text)
+        try:
+            # 获取页面纯文本内容
+            text_content = page.run_js("return document.body.innerText")
             
-            # 2. 尝试匹配服务器 ID (Renew server: XXXX)
-            sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9]+)", html, re.IGNORECASE)
-            if sid_match:
-                server_id = sid_match.group(1)
-            else:
-                # 备选：从 h2 标签提取
-                h2 = page.ele('tag:h2', timeout=1)
-                if h2 and ":" in h2.text:
-                    server_id = h2.text.split(":")[-1].strip()
-            
-            if server_id != "Unknown":
-                break
+            # 1. 提取剩余时间 (XX:XX:XX)
+            time_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", text_content)
+            if time_match:
+                expires_text = time_match.group(1)
+                expires_sec = parse_expires(expires_text)
+                
+                # 2. 提取服务器 ID (Renew server: bof5032)
+                sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9]+)", text_content, re.IGNORECASE)
+                if sid_match:
+                    server_id = sid_match.group(1)
+                
+                if server_id != "Unknown":
+                    break
+        except: pass
         time.sleep(2)
         
     return server_id, expires_text, expires_sec
@@ -107,15 +106,25 @@ def solve_recaptcha_audio(page) -> bool:
         import pydub
     except: return False
     log.info("🤖 开始处理 reCAPTCHA...")
+    
+    # 查找并点击 checkbox
     checkbox_iframe = page.ele('css:iframe[src*="recaptcha/api2/banchor"]', timeout=15)
-    if not checkbox_iframe: return False
+    if not checkbox_iframe: 
+        log.warning("❌ 未找到验证码 Checkbox iframe")
+        return False
+    
     try:
         page.switch_to.frame(checkbox_iframe)
         checkbox = page.ele('css:.recaptcha-checkbox-checkmark', timeout=5)
         if checkbox: checkbox.click()
         page.switch_to.main_frame()
-    except: pass
+    except Exception as e:
+        log.warning(f"❌ 点击 Checkbox 失败: {e}")
+        page.switch_to.main_frame()
+
     time.sleep(5)
+    
+    # 尝试识别
     for attempt in range(MAX_RETRY):
         try:
             challenge_iframe = page.ele('css:iframe[src*="recaptcha/api2/bframe"]', timeout=10)
@@ -123,37 +132,48 @@ def solve_recaptcha_audio(page) -> bool:
                 iframes = page.eles('css:iframe[src*="recaptcha"]')
                 if len(iframes) >= 2: challenge_iframe = iframes[1]
             if not challenge_iframe: continue
+
             page.switch_to.frame(challenge_iframe)
             audio_btn = page.ele('css:.rc-button-audio', timeout=5)
-            if audio_btn: audio_btn.click()
+            if audio_btn: 
+                audio_btn.click()
+                time.sleep(5)
             else: 
                 page.switch_to.main_frame()
                 continue
-            time.sleep(5)
+
             audio_link = page.ele('css:.rc-audiochallenge-tdownload-link', timeout=5)
             if not audio_link:
                 page.switch_to.main_frame()
                 continue
+
             audio_url = audio_link.attr('href')
             audio_file = SHOT_DIR / f"audio_{attempt}.mp3"
             resp = requests.get(audio_url, timeout=30)
             audio_file.write_bytes(resp.content)
+            
             wav_file = SHOT_DIR / f"audio_{attempt}.wav"
             pydub.AudioSegment.from_mp3(str(audio_file)).export(str(wav_file), format="wav")
+            
             recognizer = sr.Recognizer()
             with sr.AudioFile(str(wav_file)) as source:
                 text = recognizer.recognize_google(recognizer.record(source))
+            
+            log.info(f"✅ 识别结果: {text}")
             input_box = page.ele('css:#audio-response', timeout=5)
             if input_box:
                 input_box.input(text)
                 verify_btn = page.ele('css:#recaptcha-verify-button', timeout=5)
                 if not verify_btn: verify_btn = page.ele('css:.rc-button-goog-default', timeout=3)
                 if verify_btn: verify_btn.click()
+            
             page.switch_to.main_frame()
             time.sleep(3)
             return True
-        except:
+        except Exception as e:
+            log.warning(f"⚠️ 识别尝试 {attempt+1} 失败: {e}")
             page.switch_to.main_frame()
+            time.sleep(2)
     return False
 
 def inject_cookies(page, cookie_str: str):
@@ -171,7 +191,10 @@ def run_one(label: str, renew_url: str, cookie_str: str):
     co.headless()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-dev-shm-usage')
+    # 反爬参数
+    co.set_argument('--disable-blink-features=AutomationControlled')
     co.set_argument('--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+    
     page = ChromiumPage(co)
     page.set.timeouts(PAGE_TIMEOUT)
     try:
@@ -180,12 +203,12 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         if cookie_str:
             inject_cookies(page, cookie_str)
             page.get(renew_url)
-            time.sleep(5)
+            time.sleep(10)
         
         server_id, old_time, old_sec = get_server_info(page)
         log.info(f"👤 账号: {label} | 🆔 伺服器: {server_id} | ⏱️ 剩余: {old_time}")
 
-        if 0 < old_sec > RENEW_THRESHOLD_SECONDS:
+        if old_sec > RENEW_THRESHOLD_SECONDS:
             h = old_sec // 3600
             return {"label": label, "sid": server_id, "ok": True, "msg": f"跳过 ({h}h)", "new": f"{h}h"}
 
