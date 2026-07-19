@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 RENEW_URL = os.getenv("H2P_RENEW_URL", "")
 COOKIE_STR = os.getenv("H2P_COOKIE", "")
 WARP_PROXY = os.getenv("WARP_PROXY", "")
+PROXY_URL = os.getenv("PROXY_URL", "")
 RENEW_THRESHOLD_SECONDS = 25 * 3600
 
 MAX_RETRY = 5
@@ -265,6 +266,15 @@ def run_one(label: str, renew_url: str, cookie_str: str):
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-dev-shm-usage')
     co.set_argument('--disable-gpu')
+    
+    # 代理设置
+    if PROXY_URL:
+        log.info(f"🌐 使用代理: {PROXY_URL}")
+        co.set_proxy(PROXY_URL)
+    elif WARP_PROXY:
+        log.info(f"🌐 使用 WARP 代理: {WARP_PROXY}")
+        co.set_proxy(WARP_PROXY)
+
     # 反爬参数
     co.set_argument('--disable-blink-features=AutomationControlled')
     co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
