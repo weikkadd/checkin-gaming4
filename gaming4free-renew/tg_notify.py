@@ -2,6 +2,7 @@ import os, urllib.request, urllib.parse
 from datetime import datetime
 
 def send_tg(message, server_name="", time_text=""):
+    from utils import log
     tg_bot_token = os.environ.get("TG_BOT_TOKEN","")
     tg_chat_id = os.environ.get("TG_CHAT_ID","")
     if not tg_bot_token or not tg_chat_id:

@@ -17,26 +17,23 @@ jobs:
         with:
           lfs: false
 
-      - name: 从 git blob 恢复 renew.py（绕过 autocrlf）
+      - name: 禁用 autocrlf 防止文件压缩
         run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
           cd gaming4free-renew
-          # 检查文件是否被压缩
-          LINE_COUNT=$(wc -l < renew.py)
-          echo "renew.py has $LINE_COUNT lines"
-          if [ "$LINE_COUNT" -lt 10 ]; then
-            echo "ERROR: File is corrupted, restoring from git blob..."
-            # 从 git blob 直接提取文件内容，绕过 checkout 的 autocrlf
-            COMMIT=$(git rev-parse HEAD)
-            git show "$COMMIT:gaming4free-renew/renew.py" > renew.py.tmp
-            mv renew.py.tmp renew.py
-            LINE_COUNT=$(wc -l < renew.py)
-            echo "Restored: $LINE_COUNT lines"
-          fi
-          # 确保使用 LF 换行符
-          sed -i 's/\r$//' renew.py
-          LINE_COUNT=$(wc -l < renew.py)
-          echo "Final: $LINE_COUNT lines"
-          head -5 renew.py
+          for f in renew.py config.py utils.py cooldown.py tg_notify.py; do
+            if [ -f "$f" ]; then
+              LINE_COUNT=$(wc -l < "$f")
+              echo "$f: $LINE_COUNT lines"
+              if [ "$LINE_COUNT" -lt 10 ]; then
+                echo "ERROR: $f is corrupted, restoring from git..."
+                git checkout HEAD -- "$f"
+                LINE_COUNT=$(wc -l < "$f")
+                echo "Restored: $f has $LINE_COUNT lines"
+              fi
+            fi
+          done
 
       - name: 配置 Python
         uses: actions/setup-python@v4
