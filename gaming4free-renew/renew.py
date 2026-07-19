@@ -374,104 +374,106 @@ def main():
                         # 2. 处理 "Maybe later" 等关闭弹窗 (不点, 直接关)
                         #    不处理, 让它自己消失
 
-                        # 3. 等待 Turnstile / Confirm / 广告流程
-                        # ★ 关键改进: 不要在 uc_gui_click_captcha 后立即 reconnect (会崩溃)
-                        #    而是等待 10 秒让 Turnstile 自然通过, 然后用 sb.open_url 重新加载
+                        # 3. 等待 Turnstile + 处理后续
                         log("⏳ 等待 Turnstile / 广告流程...")
                         captcha_passed = False
-                        captcha_passed_time = 0  # 记录 Turnstile 通过的时刻
-                        browser_dead = False
-                        last_btn_check = 0
-                        for tw in range(45):  # 45 秒
-                            if browser_dead:
-                                break
+                        for tw in range(30):  # 30 秒等 Turnstile 出现
                             time.sleep(1)
                             try:
-                                # 检查 Turnstile
-                                if not captcha_passed:
-                                    ts_present = bool(sb.driver.execute_script("""
-                                        return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                            || !!document.querySelector('.cf-turnstile')
-                                            || (document.body && document.body.innerText.toLowerCase().indexOf("verify") !== -1);
-                                    """))
-                                    if ts_present:
-                                        log(f"🛡️ [第 {tw+1} 秒] 检测到 Turnstile，处理验证...")
-                                        try:
-                                            sb.uc_gui_click_captcha()
-                                            time.sleep(8)  # ★ 等 8 秒让 Turnstile 完全通过 + 后端处理
-                                            captcha_passed = True
-                                            captcha_passed_time = tw
-                                            log("✅ Turnstile 验证完成, 等待后端处理...")
-                                        except Exception as e:
-                                            log(f"⚠️ uc_gui_click_captcha 失败: {e}")
-
-                                # Turnstile 通过后, 每 3 秒检查并点击提交按钮
-                                if captcha_passed and tw - last_btn_check >= 3:
-                                    last_btn_check = tw
-                                    try:
-                                        # 列出当前所有可见按钮 (诊断, 仅前 15 秒打印)
-                                        if tw - captcha_passed_time < 15 and tw % 3 == 0:
-                                            current_btns = sb.driver.execute_script("""
-                                                var btns = document.querySelectorAll('button');
-                                                var arr = [];
-                                                for (var i = 0; i < btns.length; i++) {
-                                                    var t = (btns[i].innerText || '').trim();
-                                                    if (t && btns[i].offsetParent !== null) arr.push(t.substring(0, 50));
-                                                }
-                                                return arr;
-                                            """)
-                                            log(f"🐛 [第 {tw+1} 秒] 当前可见按钮: {current_btns}")
-                                    except: pass
-
-                                    # 尝试点击提交按钮
-                                    try:
-                                        submit_clicked = sb.driver.execute_script("""
-                                            var btns = document.querySelectorAll('button');
-                                            var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
-                                            for (var i = 0; i < btns.length; i++) {
-                                                var t = (btns[i].innerText || '').trim().toLowerCase();
-                                                if (btns[i].disabled) continue;
-                                                if (btns[i].offsetParent === null) continue;  // 不可见
-                                                for (var k = 0; k < keywords.length; k++) {
-                                                    if (t.indexOf(keywords[k]) !== -1 && t.indexOf('cancel') === -1 && t.indexOf('later') === -1) {
-                                                        btns[i].scrollIntoView({block: 'center'});
-                                                        btns[i].click();
-                                                        return 'clicked:' + btns[i].innerText.trim();
-                                                    }
-                                                }
-                                            }
-                                            return false;
-                                        """)
-                                        if submit_clicked:
-                                            log(f"✅ 点击提交按钮: {submit_clicked}")
-                                            time.sleep(3)
-                                    except: pass
-
+                                ts_present = bool(sb.driver.execute_script("""
+                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                        || !!document.querySelector('.cf-turnstile')
+                                        || (document.body && document.body.innerText.toLowerCase().indexOf("verify") !== -1);
+                                """))
+                                if ts_present:
+                                    log(f"🛡️ [第 {tw+1} 秒] 检测到 Turnstile，处理验证...")
+                                    sb.uc_gui_click_captcha()
+                                    log("✅ uc_gui_click_captcha 已执行")
+                                    captcha_passed = True
+                                    break
                             except Exception as e:
                                 err_msg = str(e)
                                 if "Connection refused" in err_msg or "Max retries exceeded" in err_msg:
-                                    log(f"💀 [第 {tw+1} 秒] 浏览器崩溃, 跳出循环")
-                                    browser_dead = True
+                                    log(f"💀 [第 {tw+1} 秒] 浏览器崩溃 (等待 Turnstile 时)")
+                                    captcha_passed = False
                                     break
-                                if tw % 10 == 0:
+                                if tw % 5 == 0:
                                     log(f"⚠️ [第 {tw+1} 秒] 异常: {err_msg[:100]}")
 
-                        time.sleep(3)
+                        # ★ 关键: uc_gui_click_captcha 后必须 reconnect (官方推荐)
+                        #    否则 driver 连接已断, 所有 execute_script 都失败
+                        time.sleep(3)  # 等 Turnstile 后端处理
 
-                        # ★ 关键修复: 用 sb.open_url 重新加载页面 (不用 reconnect)
-                        log("🔄 重新加载页面验证续期结果...")
+                        # 用 uc_open_with_reconnect 重新连接并打开页面
+                        log("🔄 用 uc_open_with_reconnect 重连浏览器...")
+                        reconnect_ok = False
+                        for reconnect_attempt in range(3):
+                            try:
+                                sb.uc_open_with_reconnect(server_url, reconnect_time=8)
+                                time.sleep(5)
+                                # 测试 driver 是否可用
+                                _ = sb.driver.title
+                                log(f"✅ 第 {reconnect_attempt+1} 次 reconnect 成功")
+                                reconnect_ok = True
+                                break
+                            except Exception as e:
+                                log(f"⚠️ 第 {reconnect_attempt+1} 次 reconnect 失败: {str(e)[:100]}")
+                                time.sleep(3)
+
+                        if not reconnect_ok:
+                            log("❌ 3 次 reconnect 都失败, 跳过本轮")
+                            send_tg(f"❌ 浏览器无法重连", server_name, before_lt)
+                            continue
+
+                        # 重连成功后, 检查是否有 Confirm/Submit 按钮 (modal 可能还在)
+                        try:
+                            current_btns = sb.driver.execute_script("""
+                                var btns = document.querySelectorAll('button');
+                                var arr = [];
+                                for (var i = 0; i < btns.length; i++) {
+                                    var t = (btns[i].innerText || '').trim();
+                                    if (t && btns[i].offsetParent !== null) arr.push(t.substring(0, 60));
+                                }
+                                return arr;
+                            """)
+                            log(f"🐛 reconnect 后可见按钮: {current_btns}")
+
+                            # 点击提交按钮
+                            submit_clicked = sb.driver.execute_script("""
+                                var btns = document.querySelectorAll('button');
+                                var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
+                                for (var i = 0; i < btns.length; i++) {
+                                    var t = (btns[i].innerText || '').trim().toLowerCase();
+                                    if (btns[i].disabled) continue;
+                                    if (btns[i].offsetParent === null) continue;
+                                    for (var k = 0; k < keywords.length; k++) {
+                                        if (t.indexOf(keywords[k]) !== -1 && t.indexOf('cancel') === -1 && t.indexOf('later') === -1) {
+                                            btns[i].scrollIntoView({block: 'center'});
+                                            btns[i].click();
+                                            return 'clicked:' + btns[i].innerText.trim();
+                                        }
+                                    }
+                                }
+                                return false;
+                            """)
+                            if submit_clicked:
+                                log(f"✅ 点击提交按钮: {submit_clicked}")
+                                time.sleep(5)
+                        except Exception as e:
+                            log(f"⚠️ 检查按钮失败: {e}")
+
+                        # 最终刷新页面验证时间
+                        log("🔄 最终刷新页面验证续期结果...")
                         try:
                             sb.open_url(server_url)
                             time.sleep(8)
-                            log("✅ 页面加载完成")
                         except Exception as e:
                             log(f"⚠️ sb.open_url 失败: {e}, 尝试 reconnect...")
                             try:
                                 sb.uc_open_with_reconnect(server_url, reconnect_time=6)
                                 time.sleep(8)
-                                log("✅ reconnect 成功")
                             except Exception as e2:
-                                log(f"❌ 所有重连方式都失败: {e2}")
+                                log(f"❌ 重连失败: {e2}")
                                 send_tg(f"❌ 浏览器崩溃: {str(e2)[:100]}", server_name, before_lt)
                                 continue
 
