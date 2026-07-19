@@ -460,18 +460,22 @@ def main():
                         except Exception as e:
                             log(f"⚠️ 检查按钮失败: {e}")
 
-                        # 最终刷新页面验证时间
-                        log("🔄 最终刷新页面验证续期结果...")
+                        # ★ 关键: 不再用 sb.open_url (会触发 CF 检测让 Chrome 崩溃)
+                        # reconnect 后页面已经是 Console, 直接用 driver.refresh() 即可
+                        log("🔄 用 driver.refresh() 刷新页面验证续期结果...")
                         try:
-                            sb.open_url(server_url)
+                            sb.driver.refresh()
                             time.sleep(8)
+                            log(f"✅ 刷新成功, 页面标题: {sb.driver.title}")
                         except Exception as e:
-                            log(f"⚠️ sb.open_url 失败: {e}, 尝试 reconnect...")
+                            log(f"⚠️ driver.refresh 失败: {str(e)[:100]}")
+                            # 尝试重新 reconnect
                             try:
-                                sb.uc_open_with_reconnect(server_url, reconnect_time=6)
-                                time.sleep(8)
+                                sb.uc_open_with_reconnect(server_url, reconnect_time=8)
+                                time.sleep(5)
+                                log("✅ fallback reconnect 成功")
                             except Exception as e2:
-                                log(f"❌ 重连失败: {e2}")
+                                log(f"❌ 所有方式都失败: {str(e2)[:100]}")
                                 send_tg(f"❌ 浏览器崩溃: {str(e2)[:100]}", server_name, before_lt)
                                 continue
 
@@ -484,6 +488,10 @@ def main():
                         if diff > 0:
                             log(f"✅ 续期成功！时间增加 {diff}秒 ({before_lt} → {after_lt})")
                             send_tg(f"✅ Pro续期成功 (+{diff}s)", server_name, after_lt)
+                        elif after_ls == 0:
+                            # 时间读不到, 但 modal 已关闭, 可能成功了
+                            log(f"⚠️ 时间读不到, 但 modal 已关闭, 可能成功 (请手动确认)")
+                            send_tg(f"⚠️ 续期可能成功 (请手动确认)", server_name, before_lt)
                         else:
                             log(f"❌ 续期失败！时间减少 {abs(diff)}秒 ({before_lt} → {after_lt})")
                             send_tg(f"❌ Pro续期失败 (-{abs(diff)}s)", server_name, after_lt)
