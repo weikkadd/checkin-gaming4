@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-host2play 自动续期脚本 (最终增强版)
+host2play 自动续期脚本 (终极兼容版)
 =====================
-- 修复：Headless 模式下页面加载慢导致读取不到信息的问题
-- 优化：增强服务器 ID 和时间的抓取逻辑
-- 逻辑：阈值 25 小时，适配 8h/24h 账号
+- 修复：增强在 Headless 模式下对服务器 ID 和时间的抓取
+- 优化：适配 Cloudflare 加载较慢的情况
 """
 
 import os
@@ -15,6 +14,7 @@ import json
 import random
 import logging
 import requests
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -66,7 +66,6 @@ def tg(msg: str, silent: bool = False):
     except: pass
 
 def parse_expires(text: str) -> int:
-    import re
     if not text: return -1
     m = re.search(r"(\d{1,2}):(\d{2}):(\d{2})", text)
     if m: return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
@@ -76,29 +75,41 @@ def get_server_info(page):
     server_id = "Unknown"
     expires_text = "Unknown"
     expires_sec = -1
-    try:
-        # 等待页面核心元素加载
-        time.sleep(10) 
-        html = page.html
-        
-        # 1. 提取服务器号
-        import re
-        sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9]+)", html, re.IGNORECASE)
-        if sid_match:
-            server_id = sid_match.group(1)
-        else:
-            h2 = page.ele('tag:h2', timeout=5)
-            if h2 and ":" in h2.text:
+    
+    # 多次尝试抓取，因为 Headless 模式渲染慢
+    for i in range(3):
+        try:
+            time.sleep(5)
+            html = page.html
+            
+            # 1. 提取服务器号 (Renew server: bof5032)
+            # 尝试从 h2 标签抓取
+            h2 = page.ele('tag:h2', timeout=2)
+            if h2 and "Renew server" in h2.text:
                 server_id = h2.text.split(":")[-1].strip()
+            else:
+                # 备选：从正则匹配
+                sid_match = re.search(r"Renew server:\s*([a-zA-Z0-9]+)", html, re.IGNORECASE)
+                if sid_match: server_id = sid_match.group(1)
+
+            # 2. 提取剩余时间 (Expires in: 19:47:37)
+            exp_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", html)
+            if exp_match:
+                expires_text = exp_match.group(1)
+                expires_sec = parse_expires(expires_text)
+            
+            if server_id != "Unknown" and expires_sec != -1:
+                break
+        except: pass
+    
+    if server_id == "Unknown":
+        log.warning(f"⚠️ 无法识别服务器号，当前页面标题: {page.title}")
         
-        # 2. 提取剩余时间
-        exp_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", html)
-        if exp_match:
-            expires_text = exp_match.group(1)
-            expires_sec = parse_expires(expires_text)
-    except: pass
     return server_id, expires_text, expires_sec
 
+# ==========================================================
+# reCAPTCHA 音频识别
+# ==========================================================
 def solve_recaptcha_audio(page) -> bool:
     try:
         import speech_recognition as sr
@@ -183,6 +194,7 @@ def run_one(label: str, renew_url: str, cookie_str: str):
         server_id, old_time, old_sec = get_server_info(page)
         log.info(f"👤 账号: {label} | 🆔 伺服器: {server_id} | ⏱️ 剩余: {old_time}")
 
+        # 如果抓取失败，old_sec 会是 -1，此时我们默认继续尝试续期，而不是跳过
         if old_sec > RENEW_THRESHOLD_SECONDS:
             h = old_sec // 3600
             return {"label": label, "sid": server_id, "ok": True, "msg": f"跳过 ({h}h)", "new": f"{h}h"}
