@@ -74,8 +74,11 @@ jobs:
           PYTHONIOENCODING: utf-8
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          GAME4FREE_ACCOUNT: ${{ secrets.GAME4FREE_ACCOUNT }}
+          # 单账号 (URL + Cookie 分开)
+          GAME4FREE_RENEW_URL: ${{ secrets.GAME4FREE_RENEW_URL }}
           GAME4FREE_COOKIE: ${{ secrets.GAME4FREE_COOKIE }}
+          # 多账号 (可选, 每行 "名称|||URL|||Cookie")
+          GAME4FREE_ACCOUNTS: ${{ secrets.GAME4FREE_ACCOUNTS }}
           IS_PROXY: ${{ env.IS_PROXY }}
           PROXY_SERVER: ${{ env.PROXY_SERVER }}
           # 修复: 禁用 SeleniumBase 自动下载 Chromedriver

@@ -16,16 +16,28 @@ except ImportError:
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────
+# 单账号模式 (URL + Cookie 分开, 推荐): GAME4FREE_RENEW_URL + GAME4FREE_COOKIE
+# 多账号模式 (可选): GAME4FREE_ACCOUNTS, 每行 "名称|||URL|||Cookie"
+RENEW_URL = os.environ.get("GAME4FREE_RENEW_URL","").strip()
+COOKIE = os.environ.get("GAME4FREE_COOKIE","").strip()
+
 ACCOUNTS = []
-for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
+# 优先多账号
+for line in os.environ.get("GAME4FREE_ACCOUNTS","").split("\n"):
     line = line.strip()
     if not line:
         continue
     parts = line.split("|||")
     if len(parts) >= 3:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+    elif len(parts) == 2:
+        # 只有 URL|||Cookie, 名称用默认
+        ACCOUNTS.append((f"server-{len(ACCOUNTS)+1}", parts[0].strip(), parts[1].strip()))
 
-COOKIE = os.environ.get("GAME4FREE_COOKIE","")
+# 单账号兜底
+if not ACCOUNTS and RENEW_URL and COOKIE:
+    ACCOUNTS.append(("我的服务器", RENEW_URL, COOKIE))
+
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN","")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID","")
 
@@ -197,31 +209,44 @@ def handle_turnstile(sb, max_retries=3):
 # ── 主流程 ────────────────────────────────────────────
 def main():
     log("========== 开始处理服务器账号 ==========")
-    
+
     if not ACCOUNTS:
-        log("❌ 未配置 GAME4FREE_ACCOUNT")
+        log("❌ 未配置账号信息")
+        log("   单账号: 配置 GAME4FREE_RENEW_URL + GAME4FREE_COOKIE 两个 Secret")
+        log("   多账号: 配置 GAME4FREE_ACCOUNTS, 每行 '名称|||URL|||Cookie'")
         sys.exit(1)
-    
-    for server_name, server_slug, email in ACCOUNTS:
-        server_url = BASE_URL + server_slug
-        
+
+    for server_name, server_url, cookie_str in ACCOUNTS:
+        # server_url 已经是完整 URL, 不需要 BASE_URL 拼接
+        if not server_url.startswith("http"):
+            server_url = BASE_URL + server_url
+
         for browser_attempt in range(max_browser_retries):
             sb = None
             try:
                 log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{max_browser_retries} 次尝试)...")
-                
+
                 sb = SB(uc=True, headless=False, browser='chrome', agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                
+
                 with sb:
                     log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{max_browser_retries} 次尝试): {server_url}")
                     sb.open_url(server_url)
                     log(f"📄 当前页面标题: {sb.get_title()}")
-                    
-                    # 注入 Cookie
-                    if COOKIE:
+
+                    # 注入完整 Cookie 字符串 (格式: name1=value1; name2=value2; ...)
+                    if cookie_str:
                         log("🍪 正在注入浏览器 Cookie 凭证...")
-                        sb.driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
-                        sb.driver.add_cookie({"name":"g4f_session", "value":COOKIE, "domain":".gaming4free.net", "path":"/", "secure":True})
+                        # 用 JS 解析 cookie 字符串并逐个 set, 兼容所有字段
+                        sb.execute_script(
+                            "(function() { var s = " + repr(cookie_str) + "; "
+                            "s.split(';').forEach(function(c) { "
+                            "c = c.trim(); if (!c) return; "
+                            "var i = c.indexOf('='); if (i < 0) return; "
+                            "var k = c.substring(0, i).trim(); "
+                            "var v = c.substring(i+1).trim(); "
+                            "document.cookie = k + '=' + v + '; path=/; domain=.gaming4free.net'; "
+                            "}); })();"
+                        )
                         log("✅ Cookie 凭证注入完成")
                         time.sleep(2)
                     
