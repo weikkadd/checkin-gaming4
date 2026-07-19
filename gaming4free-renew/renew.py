@@ -128,7 +128,8 @@ def parse_countdown_seconds(match_str):
 def get_remaining_time(sb):
     """获取页面剩余时间（秒）和文本"""
     try:
-        page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
+        # 用 IIFE 包裹, 避免 Illegal return statement
+        page_text = sb.execute_script("(function(){return document.body?document.body.innerText.substring(0,2000):'';})();")
         if not page_text:
             return ("(未知)", 0)
         time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
@@ -144,7 +145,7 @@ def get_remaining_time(sb):
 def check_button_cooldown(sb):
     """检查续期按钮是否冷却"""
     try:
-        page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
+        page_text = sb.execute_script("(function(){return document.body?document.body.innerText.substring(0,2000):'';})();")
         if not page_text:
             return None
         
@@ -172,14 +173,16 @@ def check_button_cooldown(sb):
         # 策略2: 检查按钮 disabled 状态
         try:
             disabled = bool(sb.execute_script("""
-                var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                    if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                        return btns[i].disabled;
+                (function() {
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                        if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                            return btns[i].disabled;
+                        }
                     }
-                }
-                return false;
+                    return false;
+                })();
             """))
             if disabled:
                 log("⏳ 检测到按钮 disabled 状态")
@@ -233,27 +236,45 @@ def main():
                     # 注入完整 Cookie 字符串 (格式: name1=value1; name2=value2; ...)
                     if cookie_str:
                         log("🍪 正在注入浏览器 Cookie 凭证...")
-                        # 用 JS 解析 cookie 字符串并逐个 set, 兼容所有字段
-                        sb.execute_script(
-                            "(function() { var s = " + repr(cookie_str) + "; "
-                            "s.split(';').forEach(function(c) { "
-                            "c = c.trim(); if (!c) return; "
-                            "var i = c.indexOf('='); if (i < 0) return; "
-                            "var k = c.substring(0, i).trim(); "
-                            "var v = c.substring(i+1).trim(); "
-                            "document.cookie = k + '=' + v + '; path=/; domain=.gaming4free.net'; "
-                            "}); })();"
-                        )
-                        log("✅ Cookie 凭证注入完成")
-                        time.sleep(2)
-                    
+                        # 用 Selenium add_cookie API 注入 (比 document.cookie 更可靠)
+                        # add_cookie 会自动加到当前域, 且支持 HttpOnly 字段
+                        injected = 0
+                        for item in cookie_str.split(";"):
+                            item = item.strip()
+                            if not item or "=" not in item:
+                                continue
+                            name, value = item.split("=", 1)
+                            name = name.strip()
+                            value = value.strip()
+                            if not name:
+                                continue
+                            try:
+                                sb.driver.add_cookie({
+                                    "name": name,
+                                    "value": value,
+                                    "domain": ".gaming4free.net",
+                                    "path": "/",
+                                })
+                                injected += 1
+                            except Exception as e:
+                                log(f"  ⚠️ Cookie [{name}] 注入失败: {e}")
+                        log(f"✅ 注入 {injected} 个 Cookie")
+
                     # 等待组件挂载
                     log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
                     time.sleep(1)
-                    
-                    # 刷新页面
+
+                    # 刷新页面让 Cookie 生效
+                    log("🔄 刷新页面让 Cookie 生效...")
                     sb.refresh()
-                    time.sleep(3)
+                    time.sleep(5)
+
+                    # 检查登录状态
+                    page_title = sb.get_title()
+                    log(f"📄 刷新后页面标题: {page_title}")
+                    if "Login" in page_title:
+                        log("⚠️ 仍在登录页, Cookie 可能失效或字段不完整")
+                        log("⚠️ 请确认 Cookie 包含 XSRF-TOKEN 和 gaming4free_session")
                     
                     log(f"🔑 准备执行账号操作: {server_name}")
                     
@@ -276,18 +297,20 @@ def main():
                     # 点击 +90 min
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
                     click_result = sb.execute_script("""
-                        var btns = document.querySelectorAll('button');
-                        for (var i = 0; i < btns.length; i++) {
-                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                                btns[i].scrollIntoView({block: 'center'});
-                                btns[i].removeAttribute('disabled');
-                                btns[i].style.cssText += '; pointer-events:auto !important;';
-                                btns[i].click();
-                                return 'clicked:' + txt;
+                        (function() {
+                            var btns = document.querySelectorAll('button');
+                            for (var i = 0; i < btns.length; i++) {
+                                var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                                if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                                    btns[i].scrollIntoView({block: 'center'});
+                                    btns[i].removeAttribute('disabled');
+                                    btns[i].style.cssText += '; pointer-events:auto !important;';
+                                    btns[i].click();
+                                    return 'clicked:' + txt;
+                                }
                             }
-                        }
-                        return 'not-found';
+                            return 'not-found';
+                        })();
                     """)
                     log(f"🎯 点击结果: {click_result}")
                     
@@ -302,9 +325,11 @@ def main():
                             time.sleep(1)
                             try:
                                 ts_present = bool(sb.execute_script("""
-                                    return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                                        || !!document.querySelector('.cf-turnstile')
-                                        || (document.body && document.body.innerText.includes("请验证您是真人"));
+                                    (function() {
+                                        return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+                                            || !!document.querySelector('.cf-turnstile')
+                                            || (document.body && document.body.innerText.includes("请验证您是真人"));
+                                    })();
                                 """))
                             except:
                                 ts_present = False
