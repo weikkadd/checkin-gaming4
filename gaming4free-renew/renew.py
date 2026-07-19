@@ -19,8 +19,8 @@ from tg_notify import send_tg
 from config import SERVERS
 
 MAX_BROWSER_RETRIES = 3
-# 续期阈值: 剩余 < 5 小时才触发续期
-RENEW_THRESHOLD_SECONDS = 5 * 3600
+# 续期阈值: 剩余 < 45 小时才触发续期
+RENEW_THRESHOLD_SECONDS = 45 * 162000
 
 
 def main():
@@ -81,7 +81,7 @@ def main():
                     before_lt, before_ls = get_remaining_time(driver)
                     log(f"⏱️ 续期前剩余时长: {before_lt} ({before_ls}秒)")
 
-                    # ★ 阈值判断: 剩余 > 5 小时直接跳过
+                    # ★ 阈值判断: 剩余 > 45 小时直接跳过
                     if before_ls > RENEW_THRESHOLD_SECONDS:
                         log(f"✅ 剩余 {before_lt} > 5h 阈值, 跳过续期")
                         send_tg(f"✅ 跳过 (剩余 {before_lt} > 5h)", server_name, before_lt)
