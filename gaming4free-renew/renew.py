@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Gaming4Free Renew Pro v10 - 自动续期脚本
-- 单次点击 + 刷新验证，不循环轰炸
+- 单次点击 + Turnstile 验证 + 刷新验证
 - 多层冷却检测 (expires + cd + disabled)
 - Cloudflare Turnstile 自动处理
 - TG 通知面板格式
 """
-import os, sys, time, re, json, traceback
+import os, sys, time, re, json, traceback, urllib.parse, urllib.request
 from datetime import datetime
 
 try:
@@ -16,42 +16,20 @@ except ImportError:
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────
-# 单账号模式 (URL + Cookie 分开, 推荐): GAME4FREE_RENEW_URL + GAME4FREE_COOKIE
-# 多账号模式 (可选): GAME4FREE_ACCOUNTS, 每行 "名称|||URL|||Cookie"
-RENEW_URL = os.environ.get("GAME4FREE_RENEW_URL","").strip()
-COOKIE = os.environ.get("GAME4FREE_COOKIE","").strip()
-
 ACCOUNTS = []
-# 优先多账号
-for line in os.environ.get("GAME4FREE_ACCOUNTS","").split("\n"):
+for line in os.environ.get("GAME4FREE_ACCOUNT","").split("\n"):
     line = line.strip()
     if not line:
         continue
     parts = line.split("|||")
     if len(parts) >= 3:
         ACCOUNTS.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
-    elif len(parts) == 2:
-        # 只有 URL|||Cookie, 名称用默认
-        ACCOUNTS.append((f"server-{len(ACCOUNTS)+1}", parts[0].strip(), parts[1].strip()))
 
-# 单账号兜底
-if not ACCOUNTS and RENEW_URL and COOKIE:
-    ACCOUNTS.append(("我的服务器", RENEW_URL, COOKIE))
-
+COOKIE = os.environ.get("GAME4FREE_COOKIE","")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN","")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID","")
 
-# 续期阈值: 剩余时间 < 5 小时 (18000 秒) 才触发续期
-# gaming4free 48h 上限, +90 min 每次, 没必要频繁跑
-RENEW_THRESHOLD_SECONDS = 5 * 3600  # 5 小时
-
-SUCCESS_ADD_SECONDS = 3000
-VERIFY_TIMEOUT = 300
-MAX_ROUNDS = 1
-RETRY_AFTER_FAIL = True
-browser_retry_delay = 5
-max_browser_retries = 3
-
+MAX_BROWSER_RETRIES = 3
 BASE_URL = "https://control.gaming4free.net/server/"
 
 # ── 工具函数 ──────────────────────────────────────────
@@ -74,7 +52,6 @@ def send_tg(message, server_name="", time_text=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     try:
-        # 邮箱脱敏
         masked = ""
         if ACCOUNTS:
             email = ACCOUNTS[0][2]
@@ -87,7 +64,6 @@ def send_tg(message, server_name="", time_text=""):
         else:
             masked = "****"
         
-        # 格式化时间
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         msg = (
@@ -100,10 +76,9 @@ def send_tg(message, server_name="", time_text=""):
         )
         
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        import urllib.request
         data = f"chat_id={TG_CHAT_ID}&text={urllib.parse.quote(msg)}&parse_mode=HTML".encode()
         req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/x-www-form-urlencoded"})
-        resp = urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(req, timeout=10)
         log(f"📨 TG 通知成功")
     except Exception as e:
         log(f"⚠️ TG 通知失败: {e}")
@@ -112,15 +87,9 @@ def parse_countdown_seconds(match_str):
     """解析时间字符串为秒数"""
     if not match_str:
         return 0
-    # HH:MM:SS
     m = re.match(r'(\d+):(\d+):(\d+)', match_str)
     if m:
         return int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-    # H:M:S
-    m = re.match(r'(\d+):(\d+):(\d+)', match_str)
-    if m:
-        return int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-    # Xm or Xh
     m = re.match(r'(\d+)\s*m', match_str, re.I)
     if m:
         return int(m.group(1)) * 60
@@ -132,8 +101,7 @@ def parse_countdown_seconds(match_str):
 def get_remaining_time(sb):
     """获取页面剩余时间（秒）和文本"""
     try:
-        # 用 sb.driver.execute_script 走标准 Selenium (支持顶层 return)
-        page_text = sb.driver.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
+        page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
         if not page_text:
             return ("(未知)", 0)
         time_matches = re.findall(r'(\d{1,2}:\d{2}:\d{2})', page_text)
@@ -149,7 +117,7 @@ def get_remaining_time(sb):
 def check_button_cooldown(sb):
     """检查续期按钮是否冷却"""
     try:
-        page_text = sb.driver.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
+        page_text = sb.execute_script("return document.body?document.body.innerText.substring(0,2000):'';")
         if not page_text:
             return None
         
@@ -176,7 +144,7 @@ def check_button_cooldown(sb):
         
         # 策略2: 检查按钮 disabled 状态
         try:
-            disabled = bool(sb.driver.execute_script("""
+            disabled = bool(sb.execute_script("""
                 var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
                     var txt = (btns[i].innerText || btns[i].textContent || '').trim();
@@ -197,86 +165,41 @@ def check_button_cooldown(sb):
         log(f"⚠️ 检查按钮冷却失败: {e}")
         return None
 
-def handle_turnstile(sb, max_retries=3):
-    """处理 Cloudflare Turnstile 验证"""
-    for attempt in range(max_retries):
-        try:
-            if sb.uc_gui_click_captcha():
-                time.sleep(3)
-                log(f"✅ Turnstile 验证通过 (UC 模式)")
-                return True
-        except Exception as e:
-            log(f"⚠️ UC 模式失败: {e}")
-    
-    log("❌ Turnstile 验证全部失败")
-    return False
-
 # ── 主流程 ────────────────────────────────────────────
 def main():
     log("========== 开始处理服务器账号 ==========")
-
+    
     if not ACCOUNTS:
-        log("❌ 未配置账号信息")
-        log("   单账号: 配置 GAME4FREE_RENEW_URL + GAME4FREE_COOKIE 两个 Secret")
-        log("   多账号: 配置 GAME4FREE_ACCOUNTS, 每行 '名称|||URL|||Cookie'")
+        log("❌ 未配置 GAME4FREE_ACCOUNT")
         sys.exit(1)
-
-    for server_name, server_url, cookie_str in ACCOUNTS:
-        # server_url 已经是完整 URL, 不需要 BASE_URL 拼接
-        if not server_url.startswith("http"):
-            server_url = BASE_URL + server_url
-
-        for browser_attempt in range(max_browser_retries):
+    
+    for server_name, server_slug, email in ACCOUNTS:
+        server_url = BASE_URL + server_slug
+        
+        for browser_attempt in range(MAX_BROWSER_RETRIES):
+            sb = None
             try:
-                log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{max_browser_retries} 次尝试)...")
-
-                with SB(uc=True, headless=False, browser='chrome', agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36") as sb:
-                    log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{max_browser_retries} 次尝试): {server_url}")
+                log(f"🚀 正在启动浏览器 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试)...")
+                
+                sb = SB(uc=True, headless=False, browser='chrome', agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                
+                with sb:
+                    log(f"🌐 正在访问续期页面 (第 {browser_attempt+1}/{MAX_BROWSER_RETRIES} 次尝试): {server_url}")
                     sb.open_url(server_url)
                     log(f"📄 当前页面标题: {sb.get_title()}")
-
-                    # 注入完整 Cookie 字符串 (格式: name1=value1; name2=value2; ...)
-                    if cookie_str:
+                    
+                    # 注入 Cookie
+                    if COOKIE:
                         log("🍪 正在注入浏览器 Cookie 凭证...")
-                        # 用 Selenium add_cookie API 注入 (比 document.cookie 更可靠)
-                        # add_cookie 会自动加到当前域, 且支持 HttpOnly 字段
-                        injected = 0
-                        for item in cookie_str.split(";"):
-                            item = item.strip()
-                            if not item or "=" not in item:
-                                continue
-                            name, value = item.split("=", 1)
-                            name = name.strip()
-                            value = value.strip()
-                            if not name:
-                                continue
-                            try:
-                                sb.driver.add_cookie({
-                                    "name": name,
-                                    "value": value,
-                                    "domain": ".gaming4free.net",
-                                    "path": "/",
-                                })
-                                injected += 1
-                            except Exception as e:
-                                log(f"  ⚠️ Cookie [{name}] 注入失败: {e}")
-                        log(f"✅ 注入 {injected} 个 Cookie")
-
-                    # 等待组件挂载
-                    log("⏳ 等待 Livewire/Alpine 组件完全挂载...")
-                    time.sleep(1)
-
+                        sb.driver.add_cookie({"name":"XSRF-TOKEN","value":"%22eyJpdiI6IjJhQ2R6ZmVnM2R4a0RjV09zZ3B3V1E9PSIsInZhbHVlIjoia3Z0Q3N3cG10ZlV5TnRrN0R3Q1FkU0Z4VjNpQkVJYjJjQlB3a2xkSEJ2eGJYR3l1UzNkQm91UmxVUjNqR1JhS21yYjN4eFRlU0JnZUJhNlBGM2x5a0dVZnVnZ3h6ZjR2YjB3c0JhZjhYU1h3aEh5N0xhT2JxT3JFZG5hVzBZT3V2S1EiLCJtYWMiOiI1M2YwNjM0ZjBiMWQ4ZjIyZmM2NjQ1Y2IyY2RhZWI4N2U1OGIyZjI5NjI4ZjJmYjI2MjA5YmVjZjQ4YjBhNDcyIiwidGFnIjoiIn0%22","domain":".gaming4free.net","path":"/","secure":True})
+                        sb.driver.add_cookie({"name":"g4f_session", "value":COOKIE, "domain":".gaming4free.net", "path":"/", "secure":True})
+                        log("✅ Cookie 凭证注入完成")
+                    
                     # 刷新页面让 Cookie 生效
                     log("🔄 刷新页面让 Cookie 生效...")
                     sb.refresh()
                     time.sleep(5)
-
-                    # 检查登录状态
-                    page_title = sb.get_title()
-                    log(f"📄 刷新后页面标题: {page_title}")
-                    if "Login" in page_title:
-                        log("⚠️ 仍在登录页, Cookie 可能失效或字段不完整")
-                        log("⚠️ 请确认 Cookie 包含 XSRF-TOKEN 和 gaming4free_session")
+                    log(f"📄 刷新后页面标题: {sb.get_title()}")
                     
                     log(f"🔑 准备执行账号操作: {server_name}")
                     
@@ -288,35 +211,7 @@ def main():
                     log("⏳ 等待页面完全渲染以获取初始时间...")
                     before_lt, before_ls = get_remaining_time(sb)
                     log(f"⏱️ 续期前剩余时长: {before_lt} ({before_ls}秒)")
-
-                    # ★ 阈值判断: 剩余 > 5 小时直接跳过, 不浪费 Action 分钟
-                    if before_ls > RENEW_THRESHOLD_SECONDS:
-                        log(f"✅ 剩余 {before_lt} > 5h 阈值, 跳过续期")
-                        send_tg(f"✅ 跳过 (剩余 {before_lt} > 5h)", server_name, before_lt)
-                        account_finished = True
-                        break  # 跳出 browser_attempt 循环
-
-                    # 剩余 < 5 小时, 继续续期流程
-                    log(f"⏬ 剩余 {before_lt} ≤ 5h 阈值, 开始续期流程...")
-
-                    # 诊断: 打印页面文本前 500 字符, 看按钮是否存在
-                    try:
-                        diag_text = sb.driver.execute_script("return document.body?document.body.innerText.substring(0,500):'';")
-                        log(f"🐛 页面文本前 500 字符:\n{diag_text}")
-                        # 列出所有 button 文字
-                        btn_texts = sb.driver.execute_script("""
-                            var btns = document.querySelectorAll('button');
-                            var arr = [];
-                            for (var i = 0; i < btns.length; i++) {
-                                var t = (btns[i].innerText || btns[i].textContent || '').trim();
-                                if (t) arr.push(t.substring(0, 50));
-                            }
-                            return arr;
-                        """)
-                        log(f"🐛 页面所有按钮: {btn_texts}")
-                    except Exception as e:
-                        log(f"⚠️ 诊断失败: {e}")
-
+                    
                     # 检查按钮冷却
                     cooldown_info = check_button_cooldown(sb)
                     if cooldown_info and cooldown_info.get('cooldown'):
@@ -324,319 +219,110 @@ def main():
                         log(f"⏳ 按钮冷却中，剩余 {remaining}秒，等待...")
                         time.sleep(min(remaining, 300))
                     
-                    # 点击 +90 min — 用 Selenium 原生 click (isTrusted=true)
-                    # JS element.click() 在 Livewire 3 下 isTrusted=false 会被忽略
+                    # 点击 +90 min
                     log("🖱️ 正在寻找并点击 +90 分钟续期按钮...")
-                    click_result = "not-found"
-                    try:
-                        # 用 XPath 找按钮, 然后用 Selenium 原生 click
-                        from selenium.webdriver.common.by import By
-                        xpath_candidates = [
-                            "//button[contains(., 'watch ad') and contains(., '90')]",
-                            "//button[contains(., '+ 90 min')]",
-                            "//button[contains(., '+90 min')]",
-                            "//button[contains(., '90 min') and not(contains(., '+0'))]",
-                        ]
-                        for xpath in xpath_candidates:
-                            try:
-                                btns = sb.driver.find_elements(By.XPATH, xpath)
-                                for btn in btns:
-                                    if btn.is_displayed() and btn.is_enabled():
-                                        log(f"🎯 找到按钮: {btn.text}, 用 Selenium 原生 click")
-                                        sb.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                                        time.sleep(0.3)
-                                        btn.click()  # ★ Selenium 原生 click, isTrusted=true
-                                        click_result = f"clicked:{btn.text}"
-                                        break
-                                if click_result != "not-found":
-                                    break
-                            except Exception as e:
-                                log(f"⚠️ XPath {xpath} 失败: {e}")
-                                continue
-                    except Exception as e:
-                        log(f"⚠️ Selenium 原生点击失败, fallback 到 JS: {e}")
-                        # Fallback: JS click
-                        if click_result == "not-found":
-                            click_result = sb.driver.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-                                    if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
-                                        btns[i].scrollIntoView({block: 'center'});
-                                        btns[i].removeAttribute('disabled');
-                                        btns[i].style.cssText += '; pointer-events:auto !important;';
-                                        btns[i].click();
-                                        return 'clicked:' + txt;
-                                    }
-                                }
-                                return 'not-found';
-                            """)
+                    
+                    # 查找按钮
+                    button_text = sb.execute_script("""
+                        var btns = document.querySelectorAll('button, [role="button"]');
+                        for (var i = 0; i < btns.length; i++) {
+                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                                return txt;
+                            }
+                        }
+                        return 'not-found';
+                    """)
+                    log(f"🎯 找到按钮: {button_text}")
+                    
+                    if button_text == 'not-found':
+                        log("❌ 未找到 +90 min 按钮")
+                        send_tg("❌ 未找到续期按钮", server_name, before_lt)
+                        break
+                    
+                    # 点击按钮
+                    click_result = sb.execute_script("""
+                        var btns = document.querySelectorAll('button, [role="button"]');
+                        for (var i = 0; i < btns.length; i++) {
+                            var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+                            if (txt.indexOf('90') !== -1 || txt.indexOf('+ 90') !== -1 || txt.indexOf('+90') !== -1) {
+                                btns[i].scrollIntoView({block: 'center'});
+                                btns[i].removeAttribute('disabled');
+                                btns[i].style.cssText += '; pointer-events:auto !important;';
+                                btns[i].click();
+                                return 'clicked:' + txt;
+                            }
+                        }
+                        return 'not-found';
+                    """)
                     log(f"🎯 点击结果: {click_result}")
                     
-                    if click_result == 'not-found':
-                        log("❌ 未找到 +90 min 按钮，跳过本轮")
-                        send_tg("❌ 未找到续期按钮", server_name, before_lt)
-                        account_finished = True
-                    else:
-                        # 等 2 秒让 modal 弹出
-                        time.sleep(2)
-
-                        # 诊断: 打印当前所有按钮
-                        try:
-                            modal_btns = sb.driver.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                var arr = [];
-                                for (var i = 0; i < btns.length; i++) {
-                                    var t = (btns[i].innerText || btns[i].textContent || '').trim();
-                                    if (t) arr.push(t.substring(0, 80));
-                                }
-                                return arr;
-                            """)
-                            log(f"🐛 点击后页面按钮: {modal_btns}")
-                        except: pass
-
-                        # ★ 关键修复: 不点 Enable Ads (那是首次设置广告的入口, 会取消当前续期)
-                        # 点 +90 min 后按钮会变成 'loading…' 表示续期已开始
-                        # 直接等 Turnstile 出现即可
-                        log("⏳ +90 min 已点击, 等待 loading 完成 + Turnstile 出现...")
-                        time.sleep(3)
-
-                        # 诊断: 打印点击 +90 min 后的按钮文字
-                        try:
-                            after_btns = sb.driver.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                var arr = [];
-                                for (var i = 0; i < btns.length; i++) {
-                                    var t = (btns[i].innerText || '').trim();
-                                    if (t && t.toLowerCase().indexOf('90') !== -1 || t.toLowerCase().indexOf('loading') !== -1) {
-                                        arr.push(t.substring(0, 80));
-                                    }
-                                }
-                                return arr;
-                            """)
-                            log(f"🐛 +90 min 按钮当前文字: {after_btns}")
-                        except: pass
-
-                        # ★ 关键改进: 不调用 uc_gui_click_captcha (会让 Chrome 崩溃)
-                        #    改用 uc_open_with_reconnect, SeleniumBase 会自动处理 Turnstile
-                        log("⏳ 等待 Turnstile 出现 (最多 15 秒)...")
-                        turnstile_appeared = False
-                        for tw in range(15):
-                            time.sleep(1)
+                    if 'clicked' in click_result:
+                        # 等待 Turnstile 出现
+                        log("⏳ 等待 Turnstile 验证...")
+                        ts_detected = False
+                        for tw in range(30):
                             try:
-                                ts_present = bool(sb.driver.execute_script("""
+                                ts_present = bool(sb.execute_script("""
                                     return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
                                         || !!document.querySelector('.cf-turnstile')
-                                        || (document.body && document.body.innerText.toLowerCase().indexOf("verify") !== -1);
+                                        || (document.body && document.body.innerText.includes("请验证您是真人"));
                                 """))
-                                if ts_present:
-                                    log(f"🛡️ [第 {tw+1} 秒] 检测到 Turnstile")
-                                    turnstile_appeared = True
-                                    break
-                            except Exception as e:
-                                if "Connection refused" in str(e):
-                                    log(f"💀 浏览器崩溃")
-                                    break
-
-                        # ★ 关键修复: 等 Turnstile 通过, 然后立即点击 modal 里的提交按钮
-                        # Turnstile 通过 = iframe 消失, 但 modal 还在, 需要点 Confirm/Submit
-                        if turnstile_appeared:
+                            except:
+                                ts_present = False
+                            if ts_present:
+                                log("🛡️ 检测到 Turnstile")
+                                ts_detected = True
+                                break
+                            time.sleep(1)
+                        
+                        if ts_detected:
+                            # 等待 Turnstile 自动通过
                             log("⏳ 等 Turnstile 通过 (最多 20 秒, 检测 iframe 消失)...")
-                            turnstile_passed = False
-                            for wait_tw in range(20):
-                                time.sleep(1)
+                            for wait in range(20):
                                 try:
-                                    ts_still = bool(sb.driver.execute_script("""
+                                    gone = not bool(sb.execute_script("""
                                         return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
                                             || !!document.querySelector('.cf-turnstile');
                                     """))
-                                    if not ts_still:
-                                        log(f"✅ [第 {wait_tw+1} 秒] Turnstile 已通过 (iframe 消失)")
-                                        turnstile_passed = True
+                                    if gone:
+                                        log(f"✅ [{wait+1}秒] Turnstile 已通过 (iframe 消失)")
                                         break
-                                    if wait_tw % 5 == 4:
-                                        log(f"⏳ [第 {wait_tw+1} 秒] Turnstile 仍在...")
-                                except Exception as e:
-                                    if "Connection refused" in str(e):
-                                        log(f"💀 等待 Turnstile 时浏览器崩溃")
-                                        break
-                                    log(f"⚠️ 等待异常: {str(e)[:80]}")
-
-                            # ★ Turnstile 通过后, 立即点击 modal 里的提交按钮
-                            if turnstile_passed:
-                                log("🖱️ Turnstile 通过, 查找 modal 里的提交按钮...")
-                                time.sleep(2)  # 等 modal 更新
-
-                                # 打印 modal 里所有按钮 (诊断)
-                                try:
-                                    modal_btns = sb.driver.execute_script("""
-                                        var btns = document.querySelectorAll('button');
-                                        var arr = [];
-                                        for (var i = 0; i < btns.length; i++) {
-                                            var t = (btns[i].innerText || '').trim();
-                                            if (t && btns[i].offsetParent !== null) arr.push(t.substring(0, 80));
-                                        }
-                                        return arr;
-                                    """)
-                                    log(f"🐛 Turnstile 通过后可见按钮: {modal_btns}")
-                                except: pass
-
-                                # 点击提交按钮 (排除 Cancel/Maybe later/Enable Ads)
-                                try:
-                                    submit_clicked = sb.driver.execute_script("""
-                                        var btns = document.querySelectorAll('button');
-                                        // ★ 只点明确的提交关键词, 不点 +90 (会重新触发)
-                                        var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
-                                        var exclude = ['cancel', 'later', 'enable ads', 'sign out', 'back to', '+ 90', '+90', 'watch ad', 'loading'];
-                                        for (var i = 0; i < btns.length; i++) {
-                                            var t = (btns[i].innerText || '').trim().toLowerCase();
-                                            if (btns[i].disabled) continue;
-                                            if (btns[i].offsetParent === null) continue;
-                                            // 排除关键词
-                                            var excluded = false;
-                                            for (var e = 0; e < exclude.length; e++) {
-                                                if (t.indexOf(exclude[e]) !== -1) { excluded = true; break; }
-                                            }
-                                            if (excluded) continue;
-                                            // 匹配关键词
-                                            for (var k = 0; k < keywords.length; k++) {
-                                                if (t.indexOf(keywords[k]) !== -1) {
-                                                    btns[i].scrollIntoView({block: 'center'});
-                                                    btns[i].click();
-                                                    return 'clicked:' + btns[i].innerText.trim();
-                                                }
-                                            }
-                                        }
-                                        return false;
-                                    """)
-                                    if submit_clicked:
-                                        log(f"✅ 点击提交按钮: {submit_clicked}")
-                                        time.sleep(8)  # 等后端处理
-                                    else:
-                                        log("ℹ️ 没找到 Confirm/Submit 按钮, 续期可能已自动提交 (Livewire 自动确认)")
-
-                                    # 检查 modal 是否关闭
-                                    try:
-                                        modal_still = bool(sb.driver.execute_script("""
-                                            var btns = document.querySelectorAll('button');
-                                            for (var i = 0; i < btns.length; i++) {
-                                                var t = (btns[i].innerText || '').trim().toLowerCase();
-                                                if (t.indexOf('enable ads') !== -1 || t.indexOf('cancel') !== -1) return true;
-                                            }
-                                            return false;
-                                        """))
-                                        if not modal_still:
-                                            log("🎉 modal 已关闭, 续期已提交!")
-                                        else:
-                                            log("⚠️ modal 仍在, 可能需要再点其他按钮")
-                                    except: pass
-                                except Exception as e:
-                                    log(f"⚠️ 点击提交按钮失败: {e}")
-
-                        # ★ 用 uc_open_with_reconnect 兜底 (处理可能的浏览器断连)
-                        log("🔄 用 uc_open_with_reconnect 兜底重连...")
-
-                        reconnect_ok = False
-                        for reconnect_attempt in range(3):
-                            try:
-                                log(f"🔄 第 {reconnect_attempt+1} 次 reconnect (reconnect_time=12)...")
-                                sb.uc_open_with_reconnect(server_url, reconnect_time=12)
-                                time.sleep(5)
-                                # 测试 driver 是否可用
-                                _ = sb.driver.title
-                                log(f"✅ 第 {reconnect_attempt+1} 次 reconnect 成功, 页面标题: {_}")
-                                reconnect_ok = True
-                                break
-                            except Exception as e:
-                                log(f"⚠️ 第 {reconnect_attempt+1} 次 reconnect 失败: {str(e)[:100]}")
-                                time.sleep(3)
-
-                        if not reconnect_ok:
-                            log("❌ 3 次 reconnect 都失败, 跳过本轮")
-                            send_tg(f"❌ 浏览器无法重连 (Chrome 崩溃)", server_name, before_lt)
-                            continue
-
-                        # 重连成功后, 检查是否有 Confirm/Submit 按钮
-                        try:
-                            current_btns = sb.driver.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                var arr = [];
-                                for (var i = 0; i < btns.length; i++) {
-                                    var t = (btns[i].innerText || '').trim();
-                                    if (t && btns[i].offsetParent !== null) arr.push(t.substring(0, 60));
-                                }
-                                return arr;
-                            """)
-                            log(f"🐛 reconnect 后可见按钮: {current_btns}")
-
-                            # 点击提交按钮 (如果有)
-                            submit_clicked = sb.driver.execute_script("""
-                                var btns = document.querySelectorAll('button');
-                                var keywords = ['confirm', 'submit', 'renew', 'claim', 'continue', 'ok', 'yes', 'verify', 'get free time', 'apply'];
-                                for (var i = 0; i < btns.length; i++) {
-                                    var t = (btns[i].innerText || '').trim().toLowerCase();
-                                    if (btns[i].disabled) continue;
-                                    if (btns[i].offsetParent === null) continue;
-                                    for (var k = 0; k < keywords.length; k++) {
-                                        if (t.indexOf(keywords[k]) !== -1 && t.indexOf('cancel') === -1 && t.indexOf('later') === -1) {
-                                            btns[i].scrollIntoView({block: 'center'});
-                                            btns[i].click();
-                                            return 'clicked:' + btns[i].innerText.trim();
-                                        }
-                                    }
-                                }
-                                return false;
-                            """)
-                            if submit_clicked:
-                                log(f"✅ 点击提交按钮: {submit_clicked}")
-                                time.sleep(5)
-                        except Exception as e:
-                            log(f"⚠️ 检查按钮失败: {e}")
-
-                        # ★ 关键: 不再用 sb.open_url (会触发 CF 检测让 Chrome 崩溃)
-                        # reconnect 后页面已经是 Console, 直接用 driver.refresh() 即可
+                                except:
+                                    pass
+                                time.sleep(1)
+                            
+                            # 额外等待页面响应
+                            time.sleep(5)
+                        else:
+                            log("ℹ️ 未检测到 Turnstile，直接继续")
+                            time.sleep(5)
+                        
+                        # 刷新页面验证
                         log("🔄 用 driver.refresh() 刷新页面验证续期结果...")
                         try:
-                            sb.driver.refresh()
-                            time.sleep(8)
-                            log(f"✅ 刷新成功, 页面标题: {sb.driver.title}")
+                            sb.refresh()
+                            time.sleep(5)
                         except Exception as e:
-                            log(f"⚠️ driver.refresh 失败: {str(e)[:100]}")
-                            # 尝试重新 reconnect
-                            try:
-                                sb.uc_open_with_reconnect(server_url, reconnect_time=8)
-                                time.sleep(5)
-                                log("✅ fallback reconnect 成功")
-                            except Exception as e2:
-                                log(f"❌ 所有方式都失败: {str(e2)[:100]}")
-                                send_tg(f"❌ 浏览器崩溃: {str(e2)[:100]}", server_name, before_lt)
-                                continue
-
+                            log(f"⚠️ refresh 失败: {e}")
+                            time.sleep(10)
+                        
                         # 获取续期后时间
                         after_lt, after_ls = get_remaining_time(sb)
                         diff = after_ls - before_ls
-
+                        
                         log(f"⏱️ 续期后时间: {after_lt} ({after_ls}秒)，增加: {diff}秒")
-
+                        
                         if diff > 0:
                             log(f"✅ 续期成功！时间增加 {diff}秒 ({before_lt} → {after_lt})")
-                            send_tg(f"✅ 续期成功 (+{diff//60}分钟)", server_name, after_lt)
-                        elif after_ls == 0:
-                            # 时间读不到 (Chrome 崩溃), 但前面流程走完了, 判定为可能成功
-                            # 实测: 即使报这个, 后端实际已接受续期请求
-                            log(f"⚠️ 时间读不到 (Chrome 崩溃), 但续期请求已提交, 可能成功")
-                            log(f"💡 请以面板实际显示时间为准 (脚本因 Chrome 崩溃无法验证)")
-                            send_tg(f"⚠️ 续期可能成功 (Chrome 崩溃无法验证, 请看面板)", server_name, before_lt)
-                        elif diff > -300:
-                            # 时间减少 < 5 分钟, 可能是页面加载延迟, 也判定为可能成功
-                            log(f"⚠️ 时间微减 {diff}秒 (< 5分钟), 可能是页面加载延迟, 续期可能成功")
-                            send_tg(f"⚠️ 续期可能成功 (时间差小, 请看面板)", server_name, after_lt)
+                            send_tg(f"✅ Pro续期成功 (+{diff}s)", server_name, after_lt)
                         else:
                             log(f"❌ 续期失败！时间减少 {abs(diff)}秒 ({before_lt} → {after_lt})")
-                            send_tg(f"❌ 续期失败 (-{abs(diff)//60}分钟)", server_name, after_lt)
-                        
-                        account_finished = True
-            
+                            send_tg(f"❌ Pro续期失败 (-{abs(diff)}s)", server_name, after_lt)
+                    else:
+                        log("❌ 点击按钮失败")
+                        send_tg("❌ 点击按钮失败", server_name, before_lt)
+                
             except Exception as e:
                 log(f"❌ 服务器 '{server_name}' 执行异常: {e}")
                 try:
