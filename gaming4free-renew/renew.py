@@ -127,42 +127,26 @@ def do_rounds(dr,sn,sc):
                     return'not_found';""")
                 log(f"⚠️ Livewire 失败，回退点击按钮: {btn}")
                 if btn=='clicked_90min':
-                    # 点击+90min后等待弹窗出现，然后等Turnstile
-                    log("⏳ 等待弹窗和Turnstile...")
-                    # 截图诊断
-                    try:
-                        dr.save_screenshot(os.path.join(os.path.dirname(__file__),"debug_output"),f"after_click_{int(time.time())}.png")
-                    except: pass
-                    for _ in range(60):
-                        time.sleep(1)
-                        # 检查Turnstile是否存在
-                        cf=dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]')
-                        if cf:
-                            log("🛡️ Turnstile 验证中...")
-                            continue
-                        # 检查是否有广告弹窗（Modal/Dialog）
-                        modal=dr.execute_script("""
-                            var modals=document.querySelectorAll('[role=dialog],[class*=modal],[class*=popup],[class*=overlay]');
-                            return modals.length;""")
-                        if modal>0:
-                            log(f"📺 发现弹窗/模态框 {modal}个")
-                            # 尝试关闭
-                            try:
-                                closes=dr.find_elements('css selector','[aria-label=Close],.modal-close,.close-btn')
-                                for c in closes:
-                                    try: c.click()
-                                    except: pass
-                                log("✅ 已尝试关闭弹窗")
-                            except: pass
-                            continue
-                        # Turnstile通过 + 无弹窗 = 续期完成
-                        log("✅ Turnstile通过，无弹窗")
-                        break
+                    # 点击+90min后等待广告弹窗关闭（最多60秒）
+                    log("⏳ 等待广告弹窗...")
+                    ad_end=time.time()+60
+                    while time.time()<ad_end:
+                        # 关闭广告弹窗
+                        try:
+                            dr.execute_script("""
+                                var cb=document.querySelectorAll('[aria-label=Close],.modal-close,.close-btn');
+                                for(var i=0;i<cb.length;i++)if(cb[i].offsetParent!==null)cb[i].click();""")
+                        except: pass
+                        # 检查广告是否关闭（按钮重新可见）
+                        btn_el=dr.execute_script("""
+                            var b=document.querySelector('button.rt-btn-free,[class*="rt-btn"]');
+                            return b&&b.offsetParent!==null?'visible':'hidden';""")
+                        if btn_el=='visible':
+                            log("✅ 广告已关闭，按钮可见")
+                            break
+                        time.sleep(3)
                     else:
-                        log("⚠️ 弹窗等待超时")
-                    # 诊断：打印页面HTML前500字符
-                    html=dr.execute_script("return document.documentElement.outerHTML.substring(0,500);")
-                    log(f"📄 页面HTML片段: {html[:300]}")
+                        log("⚠️ 广告等待超时，继续...")
         except Exception as e: log(f"⚠️ 续期异常: {e}")
         # 等 Turnstile
         try:
