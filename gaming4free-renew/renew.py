@@ -99,17 +99,6 @@ def do_rounds(dr,sn,sc):
         pre_ts=time.time()
         pre_time=bs
         try:
-            # 诊断：打印页面中所有按钮的文本
-            btns=dr.execute_script("""
-                var res=[];
-                var all=document.querySelectorAll('button,[role=button],[class*="btn"],[class*="Btn"],a[class*="btn"]');
-                for(var i=0;i<all.length&&i<30;i++){
-                    var t=(all[i].innerText||all[i].textContent||'').trim();
-                    if(t.length>0 && t.length<50) res.push(t);
-                }
-                return JSON.stringify(res);""")
-            log(f"🔍 页面按钮列表: {btns}")
-            
             # 尝试 Livewire extend
             lr=dr.execute_script("""
                 try{
@@ -137,8 +126,21 @@ def do_rounds(dr,sn,sc):
                     }
                     return'not_found';""")
                 log(f"⚠️ Livewire 失败，回退点击按钮: {btn}")
+                if btn=='clicked_90min':
+                    # 点击+90min后等待弹窗出现，然后等Turnstile
+                    log("⏳ 等待弹窗和Turnstile...")
+                    for _ in range(60):
+                        time.sleep(1)
+                        # 检查Turnstile是否通过
+                        if not dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]'):
+                            # 检查页面是否已更新（remaining时间变化）
+                            new_time=dr.execute_script("return document.body?document.body.innerText.substring(0,200):'';")
+                            if new_time and ('remaining' in new_time.lower() or 'cap' in new_time.lower()):
+                                log("✅ 弹窗已处理，页面已更新")
+                                break
+                    else:
+                        log("⚠️ 弹窗等待超时")
         except Exception as e: log(f"⚠️ 续期异常: {e}")
-        time.sleep(5)
         # 等 Turnstile
         try:
             if dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]'):
@@ -148,25 +150,9 @@ def do_rounds(dr,sn,sc):
                         log("✅ Turnstile 通过"); break
                     time.sleep(1)
         except: pass
-        log("🎬 等广告播放...")
-        ad_end=time.time()+60
-        while time.time()<ad_end:
-            dr.execute_script("window.dispatchEvent(new Event('mousemove'));")
-            try:
-                dr.execute_script("""
-                    var cb=document.querySelectorAll('[aria-label=Close],.modal-close');
-                    for(var i=0;i<cb.length;i++)if(cb[i].offsetParent!==null)cb[i].click();""")
-            except: pass
-            try:
-                btn=dr.execute_script("return document.querySelector('button.rt-btn-free');")
-                if btn and btn.offsetParent is not None:
-                    log("✅ 广告已关闭，按钮可见")
-                    break
-            except: pass
-            time.sleep(3)
-        # 强制刷新页面，等待 Livewire 完全更新
-        log("🔄 强制刷新页面...")
-        dr.refresh(); time.sleep(8)
+        # 等页面 Livewire 响应
+        log("⏳ 等 Livewire 响应...")
+        time.sleep(5)
         al,as_=get_time(dr)
         df=int(as_)-int(bs)
         elapsed=time.time()-pre_ts
