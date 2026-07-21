@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gaming4Free Renew Pro v23 - 实时时间监测续期策略"""
+"""Gaming4Free Renew Pro v25 - 不关弹窗，等待 Turnstile 验证 + 广告结束"""
 import os,sys,time,re,urllib.parse,urllib.request
 from datetime import datetime
 try:
@@ -13,7 +13,7 @@ from cd import *
 from tg import send_tg
 
 def main():
-    log("========== 开始处理服务器账号 (Pro v23) ==========")
+    log("========== 开始处理服务器账号 (Pro v25) ==========")
     svrs=[]
     if RENEW_URL and COOKIE:
         nm="我的服务器"
@@ -109,15 +109,12 @@ def do_rounds(dr,sb,sn,sc):
         pre_time=bs
 
         try:
-            # ===== 纯按钮点击策略 =====
-            # 1. 找到 +90min 按钮并收集详细信息
+            # 1. 找到 +90min 按钮
             btn_result=dr.execute_script("""
                 var result=null;
-                // 用 Array.from 遍历所有元素避免 querySelectorAll 的选择器冲突
                 var allEls = Array.from(document.querySelectorAll('*'));
                 for(var i=0;i<allEls.length;i++){
                     var el=allEls[i];
-                    // 只检查可交互元素
                     if(el.tagName!=='BUTTON' && el.tagName!=='A' && el.tagName!=='SPAN' && el.tagName!=='DIV') continue;
                     if(el.getAttribute('role')!=='button' && el.tagName!=='BUTTON' && el.tagName!=='A') continue;
                     var t=(el.innerText||el.textContent||'').trim();
@@ -151,19 +148,19 @@ def do_rounds(dr,sb,sn,sc):
             import json
             try:
                 bi=json.loads(btn_result)
-                log(f"🔍 找到按钮: text={bi.get('text')}, tagName={bi.get('tagName')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}, onClick={bi.get('hasOnClick')}")
-                log(f"🔍 属性: {bi.get('attributes','')}")
+                log(f"🔍 找到按钮: text={bi.get('text')}, tagName={bi.get('tagName')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
+                log(f"🔍 @click: {bi.get('attributes','')[:200]}")
             except:
                 bi={}
                 log(f"🔍 按钮信息: {btn_result[:300]}")
 
             if bi.get('disabled') or not bi.get('visible'):
-                log(f"⚠️ 按钮不可用 (disabled={bi.get('disabled')}, visible={bi.get('visible')})")
+                log(f"⚠️ 按钮不可用")
                 scr(sb, f"fail_round{cr}_btn_disabled")
                 time.sleep(10)
                 continue
 
-            # 2. 通过遍历 DOM 找到 +90min 按钮并点击
+            # 2. 点击按钮 — 这会触发 showExtendCaptcha()，弹出 Turnstile
             click_js = """
                 var allEls = Array.from(document.querySelectorAll('*'));
                 for(var i=0;i<allEls.length;i++){
@@ -185,66 +182,34 @@ def do_rounds(dr,sb,sn,sc):
             click_result=dr.execute_script(click_js)
             log(f"🖱️ 点击结果: {click_result}")
 
-            # ===== 关键：实时监测时间变化（v14 成功的核心逻辑）=====
-            log("⏳ 等待广告弹窗处理，实时监测时间...")
+            # ===== 关键：不关弹窗，等待 Turnstile 验证 + 广告结束 =====
+            # v14 成功的原因：不主动关弹窗，而是等待广告播放完毕（=Turnstile验证通过）
+            # 然后时间会自动增加
+            
+            log("⏳ 等待 Turnstile 验证和广告结束...")
             ad_end=time.time()+120
             renewed=False
+            
             while time.time()<ad_end:
-                # 关闭弹窗
-                try:
-                    dr.execute_script("""
-                        var closers=document.querySelectorAll('[aria-label="Close"],[aria-label=Close],.modal-close,.close-btn,.close,.dismiss,.overlay-close,.cf-turnstile-close,.ctf-spinner-close');
-                        for(var i=0;i<closers.length;i++){
-                            try{closers[i].click();}catch(e){}
-                        }""")
-                except: pass
-
-                # 每 3 秒检查一次时间
+                # 每 3 秒检查一次时间 — v14 成功的核心
                 try:
                     ct,cs=get_time(dr)
                     diff=cs-pre_time
                     if diff > 300:
-                        log(f"✅ 检测到时间增加 ({ct} > {bl}), 增加 {diff}秒，提前跳出")
+                        log(f"✅ 检测到时间增加 ({ct} > {bl}), 增加 {diff}秒")
                         renewed=True
                         break
                 except: pass
-
-                # 检查按钮是否重新可见
-                btn_vis=dr.execute_script("""
-                    var allBtns=document.querySelectorAll('button,[role=button]');
-                    for(var i=0;i<allBtns.length;i++){
-                        var t=(allBtns[i].innerText||allBtns[i].textContent||'').trim();
-                        if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                            var r=allBtns[i].getBoundingClientRect();
-                            if(r.width>0 && r.height>0) return true;
-                        }
-                    }
-                    return false;""")
-                if btn_vis and not renewed:
-                    log("✅ 弹窗已关闭，按钮可见")
-
+                
                 time.sleep(3)
             
             if not renewed:
-                log("⚠️ 等待弹窗超时，继续检查最终结果...")
-                scr(sb, f"fail_round{cr}_popup_timeout")
+                log("⚠️ 等待超时，检查最终结果...")
+                scr(sb, f"fail_round{cr}_timeout")
 
         except Exception as e:
             log(f"❌ 续期异常: {e}")
             scr(sb, f"fail_round{cr}_exception")
-
-        # 等待 Cloudflare Turnstile 完全消失
-        try:
-            turnstile_end=time.time()+90
-            while time.time()<turnstile_end:
-                tf=dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]')
-                if not tf:
-                    log("✅ Turnstile 验证通过")
-                    break
-                time.sleep(2)
-            else:
-                log("⚠️ Turnstile 等待超时")
-        except: pass
 
         # 最终检查
         al,as_=get_time(dr)
