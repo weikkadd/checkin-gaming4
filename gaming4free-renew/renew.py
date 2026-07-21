@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gaming4Free Renew Pro v18 - 循环续期至47小时 (纯 v3/wire:click 策略)"""
+"""Gaming4Free Renew Pro v19 - 纯按钮点击策略 (模拟真实用户)"""
 import os,sys,time,re,urllib.parse,urllib.request
 from datetime import datetime
 try:
@@ -13,7 +13,7 @@ from cd import *
 from tg import send_tg
 
 def main():
-    log("========== 开始处理服务器账号 (Pro v18) ==========")
+    log("========== 开始处理服务器账号 (Pro v19) ==========")
     svrs=[]
     if RENEW_URL and COOKIE:
         nm="我的服务器"
@@ -109,51 +109,126 @@ def do_rounds(dr,sb,sn,sc):
         pre_time=bs
 
         try:
-            # 使用 livewire_extend 三层策略 (v3 $wire.$call → v2 → 按钮点击)
-            success, method = livewire_extend(dr)
-            if success:
-                log(f"✅ 续期触发成功: {method}")
-            else:
-                log(f"⚠️ 所有续期方法均失败: {method}")
-                scr(sb, f"fail_round{cr}_no_method")
+            # ===== 纯按钮点击策略 =====
+            # 1. 找到 +90min 按钮
+            btn_info=dr.execute_script("""
+                var result=null;
+                var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
+                for(var i=0;i<allBtns.length;i++){
+                    var t=(allBtns[i].innerText||allBtns[i].textContent||'').trim();
+                    if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                        var rect=allBtns[i].getBoundingClientRect();
+                        result={
+                            idx:i,
+                            text:t,
+                            wireClick:allBtns[i].getAttribute('wire:click'),
+                            disabled:allBtns[i].disabled,
+                            visible:rect.width>0&&rect.height>0,
+                            tagName:allBtns[i].tagName
+                        };
+                        break;
+                    }
+                }
+                // 也检查 [class*="btn"] 的父级
+                if(!result){
+                    var btnClasses=document.querySelectorAll('[class*="btn"]');
+                    for(var i=0;i<btnClasses.length;i++){
+                        var parent=btnClasses[i].tagName==='BUTTON'?btnClasses[i]:btnClasses[i].querySelector('button');
+                        if(parent){
+                            var t=(parent.innerText||parent.textContent||'').trim();
+                            if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
+                                var rect=parent.getBoundingClientRect();
+                                result={text:t,wireClick:parent.getAttribute('wire:click'),disabled:parent.disabled,visible:rect.width>0&&rect.height>0,tagName:parent.tagName};
+                                break;
+                            }
+                        }
+                    }
+                }
+                return result?JSON.stringify(result):'not_found';
+            """)
+            
+            if btn_info == 'not_found':
+                log("❌ 未找到 +90min 按钮!")
+                scr(sb, f"fail_round{cr}_no_btn")
+                time.sleep(10)
+                continue
+            
+            import json
+            try:
+                bi=json.loads(btn_info)
+                log(f"🔍 找到按钮: text={bi.get('text')}, wire:click={bi.get('wireClick')}, disabled={bi.get('disabled')}, visible={bi.get('visible')}")
+            except:
+                bi={}
+                log(f"🔍 按钮信息: {btn_info[:200]}")
 
-            # 等待广告/Turnstile 弹窗关闭
+            if bi.get('disabled') or not bi.get('visible'):
+                log(f"⚠️ 按钮不可用 (disabled={bi.get('disabled')}, visible={bi.get('visible')})")
+                scr(sb, f"fail_round{cr}_btn_disabled")
+                time.sleep(10)
+                continue
+
+            # 2. 滚动到按钮并点击
+            btn_idx=bi.get('idx',0)
+            dr.execute_script(f"""
+                var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
+                if(allBtns[{btn_idx}]){
+                    var b=allBtns[{btn_idx}];
+                    b.scrollIntoView({{block:'center',behavior:'instant'}});
+                    // 先触发 hover 状态
+                    b.dispatchEvent(new MouseEvent('mouseover',{{bubbles:true,cancelable:true}}));
+                    time.sleep(0.5);
+                    // 触发完整点击链
+                    b.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,cancelable:true}}));
+                    b.dispatchEvent(new MouseEvent('mouseup',{{bubbles:true,cancelable:true}}));
+                    b.dispatchEvent(new MouseEvent('click',{{bubbles:true,cancelable:true}}));
+                    return 'clicked';
+                }
+                return 'not_found';""")
+            log("🖱️ 按钮点击事件已触发")
+            time.sleep(2)
+
+            # 3. 等待广告/Turnstile 弹窗出现并自动关闭
             log("⏳ 等待广告弹窗处理...")
-            ad_end=time.time()+90
+            ad_end=time.time()+120
+            popup_closed=False
             while time.time()<ad_end:
+                # 关闭弹窗
                 try:
                     dr.execute_script("""
-                        var closers=document.querySelectorAll('[aria-label="Close"],[aria-label=Close],.modal-close,.close-btn,.close,.dismiss,.overlay-close,.cf-turnstile-close');
+                        var closers=document.querySelectorAll('[aria-label="Close"],[aria-label=Close],.modal-close,.close-btn,.close,.dismiss,.overlay-close,.cf-turnstile-close,.ctf-spinner-close');
                         for(var i=0;i<closers.length;i++){
                             try{closers[i].click();}catch(e){}
                         }""")
                 except: pass
-
-                btn_visible=dr.execute_script("""
-                    var buttons=document.querySelectorAll('button,[role=button]');
-                    for(var i=0;i<buttons.length;i++){
-                        var t=(buttons[i].innerText||buttons[i].textContent||'').trim();
+                
+                # 检查 +90min 按钮是否重新可见
+                btn_vis=dr.execute_script("""
+                    var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
+                    for(var i=0;i<allBtns.length;i++){
+                        var t=(allBtns[i].innerText||allBtns[i].textContent||'').trim();
                         if(t.indexOf('90')!==-1 && t.indexOf('min')!==-1){
-                            var r=buttons[i].getBoundingClientRect();
-                            return r.width>0 && r.height>0;
+                            var r=allBtns[i].getBoundingClientRect();
+                            if(r.width>0 && r.height>0) return true;
                         }
                     }
                     return false;""")
-                if btn_visible:
+                if btn_vis:
                     log("✅ 弹窗已关闭，按钮可见")
+                    popup_closed=True
                     break
                 time.sleep(3)
-            else:
-                log("⚠️ 等待弹窗超时")
+            
+            if not popup_closed:
+                log("⚠️ 弹窗等待超时")
                 scr(sb, f"fail_round{cr}_popup_timeout")
 
         except Exception as e:
             log(f"❌ 续期异常: {e}")
             scr(sb, f"fail_round{cr}_exception")
 
-        # 等待 Cloudflare Turnstile 完全消失
+        # 4. 等待 Cloudflare Turnstile 完全消失
         try:
-            turnstile_end=time.time()+60
+            turnstile_end=time.time()+90
             while time.time()<turnstile_end:
                 tf=dr.find_elements('css selector','iframe[src*="challenges.cloudflare.com"]')
                 if not tf:
@@ -164,11 +239,11 @@ def do_rounds(dr,sb,sn,sc):
                 log("⚠️ Turnstile 等待超时")
         except: pass
 
-        # 等待 Livewire/AJAX 响应 — 增加到 15 秒
-        log("⏳ 等待页面响应 (15s)...")
-        time.sleep(15)
+        # 5. 等待 Livewire/AJAX 响应 — 20秒
+        log("⏳ 等待 Livewire 响应 (20s)...")
+        time.sleep(20)
 
-        # 检查结果
+        # 6. 检查结果
         al,as_=get_time(dr)
         df=int(as_)-int(pre_time)
         elapsed=time.time()-pre_ts
