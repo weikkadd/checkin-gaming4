@@ -61,6 +61,11 @@ def get_time(dr):
         if valid:
             best=max(valid,key=pars_s)
             log(f"🔍 所有匹配时间: {tm}, 选中最大有效: {best} ({pars_s(best)}s)")
+            # 诊断：打印包含该时间的上下文
+            for line in pt.split('\n'):
+                if best in line:
+                    log(f"📍 时间上下文: [{line.strip()}]")
+                    break
             return(best,pars_s(best))
         
         log(f"⚠️ 未找到有效时间, 所有匹配: {tm}")
