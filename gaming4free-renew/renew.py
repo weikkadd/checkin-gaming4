@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gaming4Free Renew Pro v20 - 实时时间监测续期策略"""
+"""Gaming4Free Renew Pro v21 - 实时时间监测续期策略"""
 import os,sys,time,re,urllib.parse,urllib.request
 from datetime import datetime
 try:
@@ -13,7 +13,7 @@ from cd import *
 from tg import send_tg
 
 def main():
-    log("========== 开始处理服务器账号 (Pro v20) ==========")
+    log("========== 开始处理服务器账号 (Pro v21) ==========")
     svrs=[]
     if RENEW_URL and COOKIE:
         nm="我的服务器"
@@ -166,24 +166,25 @@ def do_rounds(dr,sb,sn,sc):
                 time.sleep(10)
                 continue
 
-            # 2. 滚动到按钮并点击
+            # 2. 滚动到按钮并点击（不用 f-string，避免 JS 对象字面量冲突）
             btn_idx=bi.get('idx',0)
-            dr.execute_script(f"""
-                var allBtns=document.querySelectorAll('button,[role=button],a[class*="btn"],a[class*="Btn"]');
-                if(allBtns[{btn_idx}]){
-                    var b=allBtns[{btn_idx}];
-                    b.scrollIntoView({{block:'center',behavior:'instant'}});
-                    b.dispatchEvent(new MouseEvent('mouseover',{{bubbles:true,cancelable:true}}));
-                    b.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,cancelable:true}}));
-                    b.dispatchEvent(new MouseEvent('mouseup',{{bubbles:true,cancelable:true}}));
-                    b.dispatchEvent(new MouseEvent('click',{{bubbles:true,cancelable:true}}));
-                    return 'clicked';
-                }
-                return 'not_found';""")
+            click_js = (
+                "var allBtns=document.querySelectorAll('button,[role=button],a[class*=\\'btn\\'],a[class*=\\'Btn\\']);"
+                "if(allBtns[" + str(btn_idx) + "]){"
+                "var b=allBtns[" + str(btn_idx) + "];"
+                "b.scrollIntoView({block:'center',behavior:'instant'});"
+                "b.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,cancelable:true}));"
+                "b.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));"
+                "b.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));"
+                "b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));"
+                "return 'clicked';"
+                "}"
+                "return 'not_found';"
+            )
+            dr.execute_script(click_js)
             log("🖱️ 按钮点击事件已触发")
 
             # ===== 关键：实时监测时间变化（v14 成功的核心逻辑）=====
-            # 等待广告弹窗处理，同时每 3 秒检查一次时间
             log("⏳ 等待广告弹窗处理，实时监测时间...")
             ad_end=time.time()+120
             renewed=False
