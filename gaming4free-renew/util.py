@@ -304,19 +304,19 @@ def livewire_extend(dr, su=None):
     """
     # 第一层: Livewire v3/v4 $wire.$call
     lr = dr.execute_script(_LW_EXTEND_V3_JS)
-    if lr.startswith('v3_'):
+    if lr and isinstance(lr, str) and lr.startswith('v3_'):
         log(f"✅ Livewire v3 extend 成功: {lr}")
         return (True, lr)
 
     # 第二层: Livewire v2 API
     lr3 = dr.execute_script(_LW_V2_JS)
-    if lr3.startswith('v2_'):
+    if lr3 and isinstance(lr3, str) and lr3.startswith('v2_'):
         log(f"✅ Livewire v2 extend 成功: {lr3}")
         return (True, lr3)
 
     # 第三层: wire:click 按钮点击 / 文字匹配
     lr4 = dr.execute_script(_LW_CLICK_JS)
-    if lr4.startswith('wire_click:') or lr4.startswith('text_click:'):
+    if lr4 and isinstance(lr4, str) and (lr4.startswith('wire_click:') or lr4.startswith('text_click:')):
         log(f"✅ 按钮点击成功: {lr4}")
         return (True, lr4)
 
