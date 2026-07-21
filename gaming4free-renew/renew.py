@@ -85,7 +85,18 @@ def do_rounds(dr,sn,sc):
         pre_ts=time.time()
         pre_time=bs
         try:
-            # 先尝试 Livewire extend 方法
+            # 诊断：打印页面中所有按钮的文本
+            btns=dr.execute_script("""
+                var res=[];
+                var all=document.querySelectorAll('button,[role=button],[class*="btn"],[class*="Btn"],a[class*="btn"]');
+                for(var i=0;i<all.length&&i<30;i++){
+                    var t=(all[i].innerText||all[i].textContent||'').trim();
+                    if(t.length>0 && t.length<50) res.push(t);
+                }
+                return JSON.stringify(res);""")
+            log(f"🔍 页面按钮列表: {btns}")
+            
+            # 尝试 Livewire extend
             lr=dr.execute_script("""
                 try{
                     var c=Livewire.all;
