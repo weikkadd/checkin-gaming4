@@ -56,24 +56,54 @@ def inject_cookie(dr, cookie_str):
                 pass
 
 def get_time(dr):
+    """读取 remaining 时间，返回 (时间字符串, 总秒数)"""
+    import re
     for attempt in range(3):
         try:
-            el = WebDriverWait(dr, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//span[contains(text(),'remaining')]"))
-            )
-            txt = el.text.strip()
-            txt_clean = txt.replace("remaining", "").strip()
-            parts = txt_clean.split(":")
-            if len(parts) >= 3:
-                h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-                total = h * 3600 + m * 60 + s
-                log(f"✅ remaining 行: {txt_clean} (行: {txt})")
-                return txt_clean, total
-            elif len(parts) == 2:
-                m, s = int(parts[0]), int(parts[1])
-                total = m * 60 + s
-                log(f"✅ remaining 行: {txt_clean} (行: {txt})")
-                return txt_clean, total
+            # 方式1: 遍历所有元素找包含 remaining 文本的
+            elements = dr.find_elements(By.XPATH, "//*[contains(text(),'remaining')]")
+            if not elements:
+                elements = dr.find_elements(By.XPATH, "//*[contains(text(),'Remaining')]")
+            if elements:
+                for el in elements:
+                    txt = el.text.strip() or el.get_attribute("textContent").strip()
+                    if not txt:
+                        continue
+                    txt_clean = re.sub(r"(?i)remaining", "", txt).strip()
+                    m = re.search(r"(\d{1,2}:\d{2}:\d{2})", txt_clean)
+                    if m:
+                        time_str = m.group(1)
+                        parts = time_str.split(":")
+                        total = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                        log(f"✅ remaining 行: {time_str} (行: {txt[:50]})")
+                        return time_str, total
+                    m2 = re.search(r"(\d{1,2}:\d{2})", txt_clean)
+                    if m2:
+                        time_str = m2.group(1)
+                        parts = time_str.split(":")
+                        total = int(parts[0])*60 + int(parts[1])
+                        log(f"✅ remaining 行: {time_str} (行: {txt[:50]})")
+                        return time_str, total
+            # 方式2: JS 全文搜索 + 正则提取
+            body_text = dr.execute_script("return document.body ? document.body.innerText : '';")
+            for pat in [r"(\d{1,2}:\d{2}:\d{2})\s*remaining",
+                        r"remaining[^\d]*(\d{1,2}:\d{2}:\d{2})",
+                        r"(\d{1,2}:\d{2}:\d{2})\n?remaining"]:
+                m = re.search(pat, body_text, re.IGNORECASE)
+                if m:
+                    time_str = m.group(1)
+                    parts = time_str.split(":")
+                    total = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                    log(f"✅ remaining 行: {time_str} (正则匹配)")
+                    return time_str, total
+            # 方式3: 任意 HH:MM:SS (取最后一个，通常是倒计时)
+            all_times = re.findall(r"(\d{1,2}:\d{2}:\d{2})", body_text)
+            if all_times:
+                time_str = all_times[-1]
+                parts = time_str.split(":")
+                total = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                log(f"✅ remaining 行: {time_str} (全文匹配, 候选: {len(all_times)})")
+                return time_str, total
         except Exception as e:
             if attempt == 2:
                 log(f"⚠️ 获取剩余时间失败: {e}")
