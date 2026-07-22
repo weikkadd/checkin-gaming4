@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os, sys, time, json, traceback
 from datetime import datetime
 from selenium import webdriver
@@ -30,14 +30,14 @@ def init_browser(headless=True):
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--window-size=1920,1080")`n    opts.page_load_strategy = `eager`
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     opts.add_argument(f"--user-agent={ua}")
     svc = Service(executable_path=get_chromedriver())
     dr = webdriver.Chrome(service=svc, options=opts)
-    dr.set_page_load_timeout(60)
+    dr.set_page_load_timeout(120)
     try:
         dr.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
